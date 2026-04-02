@@ -1,0 +1,22 @@
+{
+  "name": "qbim-bot",
+  "version": "1.0.0",
+  "description": "QBIM Slack Bot — score tracker for lunchtime Quiddler",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "deploy": "sam build && sam deploy --guided",
+    "build": "sam build",
+    "local": "sam local start-api"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.700.0",
+    "@aws-sdk/lib-dynamodb": "^3.700.0",
+    "@slack/web-api": "^7.8.0"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-secrets-manager": "^3.700.0"
+  }
+}

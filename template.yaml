@@ -1,0 +1,156 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: QBIM Slack Bot — score tracker for lunchtime Quiddler
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    Timeout: 10
+    MemorySize: 256
+    Architectures:
+      - x86_64
+    Environment:
+      Variables:
+        GAMES_TABLE: !Ref GamesTable
+        SCORES_TABLE: !Ref ScoresTable
+        PLAYERS_TABLE: !Ref PlayersTable
+        SLACK_BOT_TOKEN: !Ref SlackBotToken
+        SLACK_SIGNING_SECRET: !Ref SlackSigningSecret
+        SLACK_CHANNEL_ID: !Ref SlackChannelId
+        SLACK_ADMIN_USER_ID: !Ref SlackAdminUserId
+
+Parameters:
+  SlackBotToken:
+    Type: String
+    NoEcho: true
+    Description: Slack Bot User OAuth Token (xoxb-...)
+  SlackSigningSecret:
+    Type: String
+    NoEcho: true
+    Description: Slack app Signing Secret
+  SlackChannelId:
+    Type: String
+    Description: Channel ID for #qbim
+  SlackAdminUserId:
+    Type: String
+    Default: U09MS4ZGBHN
+    Description: Slack user ID for the bot admin
+
+Resources:
+  # ---------- API Gateway ----------
+  QbimApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: qbim-api
+      StageName: prod
+
+  # ---------- Lambda Function (single router) ----------
+  QbimBotFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: qbim-bot
+      Handler: src/handlers/router.handler
+      CodeUri: .
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GamesTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ScoresTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PlayersTable
+      Events:
+        SlackEvents:
+          Type: Api
+          Properties:
+            RestApiId: !Ref QbimApi
+            Path: /slack/events
+            Method: POST
+        SlackInteractivity:
+          Type: Api
+          Properties:
+            RestApiId: !Ref QbimApi
+            Path: /slack/interactivity
+            Method: POST
+        StatsPlayers:
+          Type: Api
+          Properties:
+            RestApiId: !Ref QbimApi
+            Path: /stats/players
+            Method: GET
+        StatsGames:
+          Type: Api
+          Properties:
+            RestApiId: !Ref QbimApi
+            Path: /stats/games
+            Method: GET
+        StatsScores:
+          Type: Api
+          Properties:
+            RestApiId: !Ref QbimApi
+            Path: /stats/scores
+            Method: GET
+        StatsLive:
+          Type: Api
+          Properties:
+            RestApiId: !Ref QbimApi
+            Path: /stats/live
+            Method: GET
+
+  # ---------- DynamoDB Tables ----------
+  GamesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: qbim-games
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: game_id
+          AttributeType: S
+        - AttributeName: game_date
+          AttributeType: S
+        - AttributeName: game_number
+          AttributeType: N
+      KeySchema:
+        - AttributeName: game_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: date-index
+          KeySchema:
+            - AttributeName: game_date
+              KeyType: HASH
+            - AttributeName: game_number
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  ScoresTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: qbim-scores
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: game_id
+          AttributeType: S
+        - AttributeName: player_hand_key
+          AttributeType: S
+      KeySchema:
+        - AttributeName: game_id
+          KeyType: HASH
+        - AttributeName: player_hand_key
+          KeyType: RANGE
+
+  PlayersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: qbim-players
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: slack_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: slack_id
+          KeyType: HASH
+
+Outputs:
+  ApiUrl:
+    Description: API Gateway URL for Slack app configuration
+    Value: !Sub "https://${QbimApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
