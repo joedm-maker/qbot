@@ -4,6 +4,10 @@
  * Valid cards: A–Z (single letters) plus digraphs QU, IN, ER, TH, CL.
  * Words can be entered as "quiz" or "qu-i-z" (hyphens delineate cards).
  *
+ * Game types:
+ *   QBIM: hands 3–10 (8 hands)
+ *   Quickler: hands 4–8 (5 hands)
+ *
  * Scoring notes:
  *   IN (7) = I (2) + N (5)  — same score, use whichever fits hand limit
  *   ER (7) = E (2) + R (5)  — same score, use whichever fits hand limit
@@ -11,6 +15,68 @@
  *   TH (9) ≠ T (3) + H (7)  = 10  — different score, player chooses
  *   CL (10) ≠ C (8) + L (3) = 11  — different score, player chooses
  */
+
+/**
+ * Get the hand range for a game type.
+ */
+export function getHandRange(gameType) {
+  // Both QBIM and Quickler use hands 3-10.
+  // This function exists for future variants with different hand ranges.
+  return [3, 4, 5, 6, 7, 8, 9, 10];
+}
+
+const SUPERSCRIPT = { "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴", "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹" };
+
+function toSuperscript(n) {
+  return String(n).split("").map((d) => SUPERSCRIPT[d] || d).join("");
+}
+
+/**
+ * Format a word submission with superscript point values per card.
+ * Input: "fox+quiz" or "qu-i-z fox"
+ * Output: "F⁶O²X¹²  QU⁹I²Z¹⁴"
+ */
+export function formatWordsWithPoints(input) {
+  if (!input || !input.trim()) return "—";
+  const wordTokens = input.replace(/[\s,+]+/g, " ").trim().split(" ").filter(Boolean);
+
+  return wordTokens.map((token) => {
+    const upper = token.toUpperCase().trim();
+    const cards = [];
+
+    if (upper.includes("-")) {
+      // Explicit card boundaries
+      for (const t of upper.split("-")) {
+        if (t && CARD_VALUES[t] !== undefined) cards.push(t);
+        else if (t) cards.push(t);
+      }
+    } else {
+      // Greedy parse: try digraphs first
+      let i = 0;
+      while (i < upper.length) {
+        let matched = false;
+        if (i + 1 < upper.length) {
+          const pair = upper.slice(i, i + 2);
+          if (DIGRAPHS.includes(pair)) {
+            cards.push(pair);
+            i += 2;
+            matched = true;
+          }
+        }
+        if (!matched) {
+          cards.push(upper[i]);
+          i++;
+        }
+      }
+    }
+
+    return cards.map((c) => {
+      const val = CARD_VALUES[c.toUpperCase()];
+      if (val !== undefined) return `${c.toLowerCase()}${toSuperscript(val)}`;
+      return c.toLowerCase();
+    }).join("");
+  }).join("  ");
+}
 
 export const CARD_VALUES = {
   A: 2,  B: 8,  C: 8,  D: 5,  E: 2,  F: 6,  G: 6,  H: 7,

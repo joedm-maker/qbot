@@ -11,7 +11,8 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Methods": "GET",
 };
 
-const ALL_HANDS = [3, 4, 5, 6, 7, 8, 9, 10];
+import { getHandRange } from "../lib/cards.mjs";
+
 
 export async function handleStatsRequest(event) {
   const path = event.path;
@@ -85,6 +86,10 @@ async function getPlayers() {
     }
   }
 
+  // Build game lookup for type
+  const gameById = {};
+  for (const g of games) gameById[g.game_id] = g;
+
   // Enrich with computed stats
   for (const [pid, p] of Object.entries(players)) {
     const playerScores = scores.filter((s) => s.player_id === pid);
@@ -99,7 +104,9 @@ async function getPlayers() {
     const completeGameIds = [];
     for (const [gid, gScores] of Object.entries(scoresByGame)) {
       const hands = new Set(gScores.map((s) => s.hand));
-      if (ALL_HANDS.every((h) => hands.has(h))) completeGameIds.push(gid);
+      const gameType = gameById[gid]?.game_type;
+      const requiredHands = getHandRange(gameType);
+      if (requiredHands.every((h) => hands.has(h))) completeGameIds.push(gid);
     }
     const completeGames = games.filter((g) => completeGameIds.includes(g.game_id));
 

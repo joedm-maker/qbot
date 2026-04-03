@@ -1,8 +1,8 @@
 import { verifySlackSignature, parseSlackBody } from "../lib/verify.mjs";
-import { slack, CHANNEL, dmAllPlayers } from "../lib/slack.mjs";
+import { slack, CHANNEL, dmAllPlayers, dmUser } from "../lib/slack.mjs";
 import * as db from "../lib/db.mjs";
 import * as blocks from "../lib/blocks.mjs";
-import { getScoreOptions } from "../lib/cards.mjs";
+import { getScoreOptions, getHandRange, formatWordsWithPoints } from "../lib/cards.mjs";
 import { renderHome, resolveNames, aggregateScores, findCurrentRound, ADMIN_USER } from "../lib/home.mjs";
 
 export async function handler(event) {
@@ -85,6 +85,15 @@ async function handleAction(payload) {
       break;
     }
 
+    case "qbim_admin_toggle_points": {
+      if (payload.user.id !== ADMIN_USER) return;
+      const newVal = action.value === "on";
+      await db.initPreferences(ADMIN_USER);
+      await db.setPlayerPreference(ADMIN_USER, "show_card_points", newVal);
+      await renderHome(ADMIN_USER);
+      break;
+    }
+
     case "qbim_admin_edit_picker": {
       if (payload.user.id !== ADMIN_USER) return;
       const gameId = action.value;
@@ -105,6 +114,68 @@ async function handleAction(payload) {
       await slack().views.open({
         trigger_id: payload.trigger_id,
         view: blocks.adminPickerModal(gameId, playerOptions, handOptions),
+      });
+      break;
+    }
+
+    case "qbim_admin_select_game": {
+      if (payload.user.id !== ADMIN_USER) return;
+      const selectedId = action.selected_option?.value;
+      if (selectedId) {
+        await db.initPreferences(ADMIN_USER);
+        await db.setPlayerPreference(ADMIN_USER, "admin_selected_game", selectedId);
+      }
+      await renderHome(ADMIN_USER);
+      break;
+    }
+
+    case "qbim_admin_delete_game": {
+      if (payload.user.id !== ADMIN_USER) return;
+      const gameId = action.value;
+      await db.deleteAllScoresForGame(gameId);
+      await db.deleteGame(gameId);
+      // Clear admin preference
+      await db.initPreferences(ADMIN_USER);
+      await db.setPlayerPreference(ADMIN_USER, "admin_selected_game", "");
+      await renderHome(ADMIN_USER);
+      break;
+    }
+
+    case "qbim_admin_force_finalize": {
+      if (payload.user.id !== ADMIN_USER) return;
+      await finalizeGame(action.value);
+      await renderHome(ADMIN_USER);
+      break;
+    }
+
+    case "qbim_admin_nudge": {
+      if (payload.user.id !== ADMIN_USER) return;
+      const gameId = action.value;
+      const game = await db.getGame(gameId);
+      if (!game || game.status !== "ACTIVE") break;
+      const allScores = await db.getScoresForGame(gameId);
+      const round = findCurrentRound(allScores, ADMIN_USER, game);
+      if (round && round.hand && round.missingPlayerIds && round.missingPlayerIds.length > 0) {
+        for (const pid of round.missingPlayerIds) {
+          try {
+            await dmUser(pid, {
+              text: `Reminder: everyone's waiting on you for Hand ${round.hand}!`,
+            });
+          } catch (err) {
+            console.warn("Failed to nudge player:", pid, err.message);
+          }
+        }
+      }
+      await renderHome(ADMIN_USER);
+      break;
+    }
+
+    case "qbim_admin_guest_join": {
+      if (payload.user.id !== ADMIN_USER) return;
+      const gameId = action.value;
+      await slack().views.open({
+        trigger_id: payload.trigger_id,
+        view: blocks.adminGuestJoinModal(gameId),
       });
       break;
     }
@@ -140,6 +211,11 @@ async function handleViewSubmission(payload) {
   if (callbackId === "qbim_admin_save_edit") {
     if (payload.user.id !== ADMIN_USER) return respond(200);
     return await adminSaveEdit(payload);
+  }
+
+  if (callbackId === "qbim_admin_guest_join_submit") {
+    if (payload.user.id !== ADMIN_USER) return respond(200);
+    return await adminGuestJoinSubmit(payload);
   }
 
   return respond(200);
@@ -265,6 +341,9 @@ async function saveScore(userId, game_id, hand, wordsInput, chosen) {
   if (handScores.length >= eligiblePlayers.length) {
     // Re-calculate stars; only post channel summary & check game completion on first completion
     await autoAwardStars(game, hand, handScores, !isEdit);
+  } else if (eligiblePlayers.length - handScores.length === 1) {
+    // Exactly one player remaining — record timestamp for slow submitter nudge
+    await db.updateGameAttr(game_id, { last_waiting_since: new Date().toISOString() });
   }
 
   // Refresh the user's home tab
@@ -334,34 +413,36 @@ export async function autoAwardStars(game, hand, handScores, announce = true) {
 
   if (announce) {
     // Build per-player summary lines
+    // Check if card points display is enabled
+    const adminPlayer = await db.getPlayer(ADMIN_USER);
+    const showCardPoints = adminPlayer?.preferences?.show_card_points ?? true;
+
     const playerLines = handScores.map((s) => {
       const name = names.get(s.player_slack_id) || s.player_slack_id;
       const starStr = (s.player_slack_id === longestWinner ? "★" : "") + (s.player_slack_id === mostWordsWinner ? "★" : "");
-      return `• *${name}*: ${s.words || "(no words)"}  — *${s.raw_score} pts*${starStr ? "  " + starStr : ""}`;
+      const wordsFormatted = s.words
+        ? (showCardPoints ? formatWordsWithPoints(s.words) : s.words.toLowerCase().replace(/\+/g, " "))
+        : "(no words)";
+      return `• *${name}*: ${wordsFormatted}  — *${s.raw_score} pts*${starStr ? "  " + starStr : ""}`;
     });
 
-    // Determine next dealer: most cumulative raw points, tiebreak by least recent dealer
+    // Determine next dealer: highest raw score on THIS hand, tiebreak by least recent dealer
+    const gameHands = getHandRange(game.game_type);
+    const lastHand = gameHands[gameHands.length - 1];
     let dealerLine = "";
-    if (hand < 10) {
-      const allScores = await db.getScoresForGame(game.game_id);
-      const rawTotals = {};
-      for (const s of allScores) {
-        rawTotals[s.player_slack_id] = (rawTotals[s.player_slack_id] || 0) + (s.raw_score || 0);
-      }
-
-      const maxRaw = Math.max(...Object.values(rawTotals));
-      const candidates = Object.entries(rawTotals).filter(([, v]) => v === maxRaw).map(([pid]) => pid);
+    if (hand < lastHand) {
+      const maxRaw = Math.max(...handScores.map((s) => s.raw_score || 0));
+      const candidates = handScores.filter((s) => (s.raw_score || 0) === maxRaw).map((s) => s.player_slack_id);
 
       let nextDealer;
       if (candidates.length === 1) {
         nextDealer = candidates[0];
       } else {
-        // Tiebreak: who dealt least recently (latest index in dealers array = most recent)
         const dealers = game.dealers || [];
         nextDealer = candidates.sort((a, b) => {
           const aLast = dealers.lastIndexOf(a);
           const bLast = dealers.lastIndexOf(b);
-          return aLast - bLast; // lower index (or -1) = dealt less recently = should deal
+          return aLast - bLast;
         })[0];
       }
 
@@ -375,13 +456,13 @@ export async function autoAwardStars(game, hand, handScores, announce = true) {
     ];
     await dmAllPlayers(game.players, { text: `Hand ${hand} complete! ${starSummary}`, blocks: msgBlocks });
 
-    // After hand 10, enter review mode instead of completing immediately
-    if (hand === 10) {
+    // After last hand, enter review mode instead of completing immediately
+    if (hand === lastHand) {
       const allScores = await db.getScoresForGame(game.game_id);
       const startHands = game.player_start_hands || {};
-      const eligible10 = game.players.filter((pid) => (startHands[pid] || 3) <= 10);
-      const hand10Scores = allScores.filter((s) => s.hand === 10);
-      if (hand10Scores.length >= eligible10.length && !game.review_started_at) {
+      const eligibleLast = game.players.filter((pid) => (startHands[pid] || gameHands[0]) <= lastHand);
+      const lastHandScores = allScores.filter((s) => s.hand === lastHand);
+      if (lastHandScores.length >= eligibleLast.length && !game.review_started_at) {
         await db.updateGameStatus(game.game_id, "ACTIVE", {
           review_started_at: new Date().toISOString(),
         });
@@ -429,6 +510,9 @@ async function adminPickEdit(payload) {
   const existing = scores.find((s) => s.player_slack_id === playerId);
   const currentWords = existing?.words || "";
 
+  // Look up current mulligan count
+  const currentMulligans = await db.getMulliganCount(game_id, playerId, hand);
+
   const playerRecord = await db.getPlayer(playerId);
   const playerName = playerRecord?.display_name || playerId;
 
@@ -438,7 +522,7 @@ async function adminPickEdit(payload) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       response_action: "update",
-      view: blocks.adminEditModal(game_id, playerId, playerName, hand, currentWords),
+      view: blocks.adminEditModal(game_id, playerId, playerName, hand, currentWords, currentMulligans),
     }),
   };
 }
@@ -448,13 +532,19 @@ async function adminSaveEdit(payload) {
   try { ({ game_id, player_id, hand } = JSON.parse(payload.view.private_metadata)); } catch { return respond(200); }
   const wordsInput = payload.view.state.values.words_block.words?.value || "";
 
-  // Calculate score from words
-  const { options, invalid } = getScoreOptions(wordsInput, hand);
+  // Read and apply mulligan count from the modal
+  const mulliganValue = payload.view.state.values.mulligans_block?.mulligans?.value;
+  const newMulligans = mulliganValue != null ? Number(mulliganValue) : 0;
+  await db.setMulliganCount(game_id, player_id, hand, newMulligans);
+
+  // Calculate score from words (accounting for mulligans)
+  const maxCards = hand - newMulligans;
+  const { options, invalid } = getScoreOptions(wordsInput, maxCards);
   if (invalid.length) {
     return validationError(`Invalid cards: ${invalid.join(", ")}`);
   }
   if (options.length === 0) {
-    return validationError(`No valid card combinations fit within Hand ${hand}.`);
+    return validationError(`No valid card combinations fit within Hand ${hand}${newMulligans > 0 ? ` with ${newMulligans} mulligan${newMulligans > 1 ? "s" : ""}` : ""} (max ${maxCards} cards).`);
   }
 
   // Use highest scoring option
@@ -507,6 +597,50 @@ async function adminRecalcAllStars(gameId) {
   }
 }
 
+// ── Admin Guest Join ─────────────────────────────────────
+
+async function adminGuestJoinSubmit(payload) {
+  let game_id;
+  try { ({ game_id } = JSON.parse(payload.view.private_metadata)); } catch { return respond(200); }
+  const guestName = payload.view.state.values.guest_name_block.guest_name?.value || "Guest";
+
+  // Set the Office account's display_name to the guest name
+  await db.upsertPlayer(ADMIN_USER, guestName);
+
+  // Add to game (uses same logic as joinGame in game-flow)
+  const game = await db.getGame(game_id);
+  if (!game || (game.status !== "OPEN" && game.status !== "ACTIVE")) return respond(200);
+
+  // Determine start hand
+  let startHand = 3;
+  if (game.status === "ACTIVE") {
+    const scores = await db.getScoresForGame(game_id);
+    for (let h = 3; h <= 10; h++) {
+      const eligibleCount = game.players.filter(
+        (pid) => (game.player_start_hands?.[pid] || 3) <= h
+      ).length;
+      const handScores = scores.filter((s) => s.hand === h);
+      if (handScores.length < eligibleCount) {
+        startHand = h;
+        break;
+      }
+      startHand = h + 1;
+    }
+    if (startHand > 10) return respond(200);
+  }
+
+  try {
+    await db.addPlayerToGame(game_id, ADMIN_USER);
+  } catch (err) {
+    // Condition check failed — already in the game
+    if (err.name !== "ConditionalCheckFailedException") throw err;
+  }
+  await db.setPlayerStartHand(game_id, ADMIN_USER, startHand);
+
+  await renderHome(ADMIN_USER);
+  return respond(200, { response_action: "clear" });
+}
+
 // ── Final Leaderboard ──────────────────────────────────
 
 async function postFinalLeaderboard(game, allScores) {
@@ -541,8 +675,10 @@ async function updatePlayerStats(game, allScores) {
   const startHands = game.player_start_hands || {};
   const totals = aggregateScores(allScores);
 
-  // A player has a "complete" game only if they started at hand 3 (played all hands)
-  const completePlayers = game.players.filter((pid) => (startHands[pid] || 3) === 3);
+  // A player has a "complete" game only if they started at the first hand (played all hands)
+  const gameHands = getHandRange(game.game_type);
+  const firstHand = gameHands[0];
+  const completePlayers = game.players.filter((pid) => (startHands[pid] || firstHand) === firstHand);
 
   // Find winner among complete players only
   let maxFinal = -Infinity;
@@ -557,6 +693,38 @@ async function updatePlayerStats(game, allScores) {
     }
   }
 
+  // Compute screwed/villain counts per player across all hands
+  const screwedCounts = new Map(); // times_hand_screwed per player
+  const screwedOthersCounts = new Map(); // times_screwed_others per player
+  const hands = [...new Set(allScores.map((s) => s.hand))];
+  for (const h of hands) {
+    const handScores = allScores.filter((s) => s.hand === h);
+    if (handScores.length < 2) continue;
+
+    // Effective score = raw_score + (stars * 10)
+    const withEff = handScores.map((s) => ({
+      pid: s.player_slack_id,
+      raw: s.raw_score || 0,
+      eff: (s.raw_score || 0) + (s.stars || 0) * 10,
+    }));
+
+    // Find single highest effective score player
+    const maxEff = Math.max(...withEff.map((p) => p.eff));
+    const effWinners = withEff.filter((p) => p.eff === maxEff);
+
+    // Find single highest raw score player
+    const maxRaw = Math.max(...withEff.map((p) => p.raw));
+    const rawWinners = withEff.filter((p) => p.raw === maxRaw);
+
+    // Both must be single winners (no ties) and must differ
+    if (effWinners.length === 1 && rawWinners.length === 1 && effWinners[0].pid !== rawWinners[0].pid) {
+      const rawWinnerId = rawWinners[0].pid;
+      const effWinnerId = effWinners[0].pid;
+      screwedCounts.set(rawWinnerId, (screwedCounts.get(rawWinnerId) || 0) + 1);
+      screwedOthersCounts.set(effWinnerId, (screwedOthersCounts.get(effWinnerId) || 0) + 1);
+    }
+  }
+
   for (const playerId of game.players) {
     const t = totals.get(playerId) || { stars: 0 };
     const isComplete = completePlayers.includes(playerId);
@@ -566,9 +734,12 @@ async function updatePlayerStats(game, allScores) {
       .reduce((sum, s) => sum + (s.mulligans || 0), 0);
     await db.incrementPlayerStats(playerId, {
       gamesPlayed: isComplete ? 1 : 0,
+      incompleteGames: isComplete ? 0 : 1,
       wins: isComplete && playerId === winnerId ? 1 : 0,
       stars: t.stars,
       mulligans: playerMulligans,
+      handScrewed: screwedCounts.get(playerId) || 0,
+      screwedOthers: screwedOthersCounts.get(playerId) || 0,
     });
   }
 }

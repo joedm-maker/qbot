@@ -1,3 +1,5 @@
+import { getHandRange } from "./cards.mjs";
+
 // ── Block Kit helpers ───────────────────────────────────
 
 /**
@@ -7,6 +9,7 @@ export function homeNoGame() {
   return {
     type: "home",
     blocks: [
+      header("🎴 QBIM"),
       section("No game today yet."),
       actions([button("Start Game", "qbim_start_game")]),
     ],
@@ -22,7 +25,8 @@ export function homeLobby(game, playerNames, userInGame) {
     : "_No players yet_";
 
   const blks = [
-    section(`*Game #${game.game_number}* — ${game.game_type}\nStarted by <@${game.host_slack_id}>`),
+    header(`🎮 Game #${game.game_number} — ${game.game_type}`),
+    context([`Started by <@${game.host_slack_id}>`]),
     divider(),
     section(`*Players:*\n${roster}`),
   ];
@@ -37,9 +41,10 @@ export function homeLobby(game, playerNames, userInGame) {
 
   // Empty score table
   blks.push(divider());
-  blks.push(section("*Scoreboard*"));
-  const handLabels = [3, 4, 5, 6, 7, 8, 9, 10].map((h) => `H${h}`).join("  |  ");
-  const emptyScores = [3, 4, 5, 6, 7, 8, 9, 10].map(() => "·").join("    |    ");
+  blks.push(header("📊 Scoreboard"));
+  const hands = getHandRange(game.game_type);
+  const handLabels = hands.map((h) => `H${h}`).join("  |  ");
+  const emptyScores = hands.map(() => "·").join("    |    ");
   for (const name of playerNames) {
     blks.push(section(`*${name}*\n${handLabels}\n${emptyScores}`));
   }
@@ -50,9 +55,10 @@ export function homeLobby(game, playerNames, userInGame) {
 /**
  * Home tab when game is ACTIVE — shows current hand prompt + full score grid.
  */
-export function homeActive(game, playerNames, round, totals, rawScores, viewerId, showOwnScore) {
+export function homeActive(game, playerNames, round, totals, rawScores, viewerId, showOwnScore, missingNames) {
   const blks = [
-    section(`*Game #${game.game_number}* — ${game.game_type} — _In Progress_`),
+    header(`🎮 Game #${game.game_number} — ${game.game_type}`),
+    context(["_In Progress_"]),
     divider(),
   ];
 
@@ -66,26 +72,27 @@ export function homeActive(game, playerNames, round, totals, rawScores, viewerId
         button("Mulligan", "qbim_mulligan", `${game.game_id}|${round.hand}`),
       ];
       blks.push(
-        section(`Enter your score for *Hand ${round.hand}*${mulliganNote}`),
+        section(`✏️ Enter your score for *Hand ${round.hand}*${mulliganNote}`),
         actions(btns)
       );
     } else {
-      const mySubmission = round.myWords
-        ? `You submitted: *${round.myWords}* (${round.myScore} pts)${mulliganNote}`
-        : `Waiting for other players to finish *Hand ${round.hand}*...`;
-      blks.push(
-        section(mySubmission),
-        actions([button(`Edit Hand ${round.hand}`, "qbim_open_hand_modal", `${game.game_id}|${round.hand}`)])
-      );
+      const myLine = round.myWords
+        ? `✅ You submitted: *${round.myWords}* (${round.myScore} pts)${mulliganNote}`
+        : `⏳ Waiting for other players to finish *Hand ${round.hand}*...`;
+      blks.push(section(myLine));
+      if (missingNames && missingNames.length > 0) {
+        blks.push(context([`⏳ Waiting on: ${missingNames.join(", ")}`]));
+      }
+      blks.push(actions([button(`Edit Hand ${round.hand}`, "qbim_open_hand_modal", `${game.game_id}|${round.hand}`)]));
     }
   } else {
-    blks.push(section("All hands complete!"));
+    blks.push(section("✅ All hands complete!"));
   }
 
   // Scoreboard
   if (rawScores && rawScores.length) {
     blks.push(divider());
-    blks.push(section("*Scoreboard*"));
+    blks.push(header("📊 Scoreboard"));
     blks.push(...buildScoreboard(game.players, playerNames, rawScores, totals, viewerId, showOwnScore));
   }
 
@@ -156,14 +163,13 @@ function buildScoreboard(playerIds, playerNames, rawScores, totals, viewerId, sh
  */
 export function homeReview(game, playerNames, allScores, totals, viewerId, showOwnScore) {
   const blks = [
-    section(`*Game #${game.game_number}* — ${game.game_type} — *Review*`),
-    divider(),
-    section("All hands complete! Review the scores before finalizing."),
+    header(`🎮 Game #${game.game_number} — ${game.game_type}`),
+    context(["✅ All hands complete — review scores before finalizing"]),
     divider(),
   ];
 
   // Full scoreboard
-  blks.push(section("*Scoreboard*"));
+  blks.push(header("📊 Scoreboard"));
   blks.push(...buildScoreboard(game.players, playerNames, allScores, totals, viewerId, showOwnScore));
 
   // Finalize button
@@ -179,16 +185,16 @@ export function homeReview(game, playerNames, allScores, totals, viewerId, showO
  */
 export function homeComplete(game, totals, playerNames, rawScores) {
   const blks = [
-    section(`*Game #${game.game_number}* — ${game.game_type} — *Complete*`),
+    header(`🏆 Game #${game.game_number} — ${game.game_type} — Complete`),
     divider(),
-    section("*Final Leaderboard:*"),
+    header("📋 Final Leaderboard"),
     leaderboardTable(totals, playerNames, true),
   ];
 
   // Show full score table if rawScores provided
   if (rawScores && rawScores.length) {
     blks.push(divider());
-    blks.push(section("*Scoreboard*"));
+    blks.push(header("📊 Scoreboard"));
     // Show all totals since game is over — no hiding
     blks.push(...buildScoreboard(game.players, playerNames, rawScores, totals, null, false));
   }
@@ -451,7 +457,7 @@ export function adminPickerModal(gameId, playerOptions, handOptions) {
   };
 }
 
-export function adminEditModal(gameId, playerId, playerName, hand, currentWords) {
+export function adminEditModal(gameId, playerId, playerName, hand, currentWords, currentMulligans) {
   return {
     type: "modal",
     callback_id: "qbim_admin_save_edit",
@@ -472,6 +478,21 @@ export function adminEditModal(gameId, playerId, playerName, hand, currentWords)
           action_id: "words",
           initial_value: currentWords || "",
           placeholder: text("e.g. quiz or qu-i-z"),
+        },
+      },
+      {
+        type: "input",
+        block_id: "mulligans_block",
+        label: text("Mulligans"),
+        optional: true,
+        element: {
+          type: "number_input",
+          action_id: "mulligans",
+          is_decimal_allowed: false,
+          min_value: "0",
+          max_value: String(hand - 1),
+          initial_value: String(currentMulligans || 0),
+          placeholder: text("0"),
         },
       },
     ],
@@ -503,29 +524,71 @@ export function playerCard(player) {
   const screwedOthers = player.times_screwed_others || 0;
   const bh = player.best_hand;
 
-  const lines = [
-    `*${name}'s Stats*`,
-    `*Record:* ${wins}W – ${losses}L (${typeof wpct === "number" ? wpct.toFixed(1) : wpct}%)  |  *Games:* ${gp}`,
-    `*Avg Total:* ${typeof avg === "number" ? avg.toFixed(1) : avg}  |  *Range:* ${low} – ${high}`,
-    `*Highest Hand:* ${highHand}  |  *Hands Won:* ${hw}`,
-    `*Stars:* ${stars} (${"★".repeat(Math.min(stars, 10))}${stars > 10 ? "…" : ""})  |  *Stars/Game:* ${typeof spg === "number" ? spg.toFixed(2) : spg}`,
-    `*Hand Screwed:* ${screwed}  |  *Screwed Others:* ${screwedOthers}  |  *Mulligans:* ${player.all_time_mulligans || 0}`,
-  ];
-
-  if (bh) {
-    lines.push(`*Best Hand:* Hand ${bh.hand} (${bh.wins} wins, avg ${bh.avg})`);
-  }
-
   return [
     divider(),
-    section(lines.join("\n")),
+    header(`📋 ${name}'s Stats`),
+    section(`*${wins}W – ${losses}L* (${typeof wpct === "number" ? wpct.toFixed(1) : wpct}%)  •  ${gp} games`),
+    sectionWithFields([
+      `*Avg Total*\n${typeof avg === "number" ? avg.toFixed(1) : avg}`,
+      `*Range*\n${low} – ${high}`,
+      `*Highest Hand*\n${highHand}`,
+      `*Hands Won*\n${hw}`,
+      `*Stars*\n${stars} (${typeof spg === "number" ? spg.toFixed(2) : spg}/g)`,
+      `*Mulligans*\n${player.all_time_mulligans || 0}`,
+      `*😤 Screwed*\n${screwed}`,
+      `*😈 Villain*\n${screwedOthers}`,
+    ]),
+    ...(bh ? [context([`🎯 Best hand: H${bh.hand} (${bh.wins} wins, avg ${bh.avg})`])] : []),
+    ...(player.incomplete_games ? [context([`⚠️ ${player.incomplete_games} incomplete game${player.incomplete_games > 1 ? "s" : ""}`])] : []),
   ];
+}
+
+// ── Admin Guest Join Modal ──────────────────────────────
+
+export function adminGuestJoinModal(gameId) {
+  return {
+    type: "modal",
+    callback_id: "qbim_admin_guest_join_submit",
+    private_metadata: JSON.stringify({ game_id: gameId }),
+    title: text("Join as Guest"),
+    submit: text("Join"),
+    blocks: [
+      {
+        type: "input",
+        block_id: "guest_name_block",
+        label: text("Guest Name"),
+        element: {
+          type: "plain_text_input",
+          action_id: "guest_name",
+          placeholder: text("e.g. Mom, Uncle Bob"),
+        },
+      },
+    ],
+  };
 }
 
 // ── Primitives ─────────────────────────────────────────
 
+function header(txt) {
+  return { type: "header", text: { type: "plain_text", text: txt, emoji: true } };
+}
+
 function section(txt) {
   return { type: "section", text: { type: "mrkdwn", text: txt } };
+}
+
+function sectionWithFields(fieldPairs) {
+  return {
+    type: "section",
+    fields: fieldPairs.map((f) => ({ type: "mrkdwn", text: f })),
+  };
+}
+
+function context(texts) {
+  return {
+    type: "context",
+    elements: texts.map((t) => ({ type: "mrkdwn", text: t })),
+  };
 }
 
 function divider() {

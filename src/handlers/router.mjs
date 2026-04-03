@@ -85,6 +85,7 @@ export async function handler(event) {
     if (SCORE_CALLBACKS.has(callbackId)) return scoreEntryHandler(event);
     if (callbackId === "qbim_admin_pick_edit") return scoreEntryHandler(event);
     if (callbackId === "qbim_admin_save_edit") return scoreEntryHandler(event);
+    if (callbackId === "qbim_admin_guest_join_submit") return scoreEntryHandler(event);
   }
 
   console.warn("Unrouted payload type:", parsed.type);

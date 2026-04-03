@@ -5,6 +5,8 @@ import {
   PutCommand,
   QueryCommand,
   UpdateCommand,
+  ScanCommand,
+  DeleteCommand,
 } from "@aws-sdk/lib-dynamodb";
 
 const client = new DynamoDBClient({});
@@ -62,6 +64,21 @@ export async function getRecentGames(limit = 5) {
     return yItems || [];
   }
   return Items;
+}
+
+export async function getMaxGameNumber() {
+  const items = [];
+  let lastKey;
+  do {
+    const result = await ddb.send(new ScanCommand({
+      TableName: GAMES_TABLE,
+      ProjectionExpression: "game_number",
+      ExclusiveStartKey: lastKey,
+    }));
+    items.push(...(result.Items || []));
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
+  return items.reduce((max, item) => Math.max(max, item.game_number || 0), 0);
 }
 
 export async function createGame(game) {
@@ -128,6 +145,19 @@ export async function addMulligan(gameId, playerId, hand) {
       UpdateExpression: "SET mulligans.#k = if_not_exists(mulligans.#k, :zero) + :one",
       ExpressionAttributeNames: { "#k": key },
       ExpressionAttributeValues: { ":zero": 0, ":one": 1 },
+    })
+  );
+}
+
+export async function setMulliganCount(gameId, playerId, hand, count) {
+  const key = `${playerId}#${hand}`;
+  await ddb.send(
+    new UpdateCommand({
+      TableName: GAMES_TABLE,
+      Key: { game_id: gameId },
+      UpdateExpression: "SET mulligans.#k = :c",
+      ExpressionAttributeNames: { "#k": key },
+      ExpressionAttributeValues: { ":c": count },
     })
   );
 }
@@ -269,13 +299,16 @@ export async function initPreferences(slackId) {
   );
 }
 
-export async function incrementPlayerStats(slackId, { gamesPlayed = 0, wins = 0, stars = 0, mulligans = 0 }) {
+export async function incrementPlayerStats(slackId, { gamesPlayed = 0, incompleteGames = 0, wins = 0, stars = 0, mulligans = 0, handScrewed = 0, screwedOthers = 0 }) {
   const parts = [];
   const values = {};
   if (gamesPlayed) { parts.push("games_played :gp"); values[":gp"] = gamesPlayed; }
+  if (incompleteGames) { parts.push("incomplete_games :ig"); values[":ig"] = incompleteGames; }
   if (wins) { parts.push("all_time_wins :w"); values[":w"] = wins; }
   if (stars) { parts.push("all_time_stars :st"); values[":st"] = stars; }
   if (mulligans) { parts.push("all_time_mulligans :ml"); values[":ml"] = mulligans; }
+  if (handScrewed) { parts.push("times_hand_screwed :hs"); values[":hs"] = handScrewed; }
+  if (screwedOthers) { parts.push("times_screwed_others :so"); values[":so"] = screwedOthers; }
   if (!parts.length) return;
 
   await ddb.send(
@@ -285,5 +318,89 @@ export async function incrementPlayerStats(slackId, { gamesPlayed = 0, wins = 0,
       UpdateExpression: `ADD ${parts.join(", ")}`,
       ExpressionAttributeValues: values,
     })
+  );
+}
+
+// ── Regular Players Query ───────────────────────────────
+
+export async function getRegularPlayers(minGames) {
+  const items = [];
+  let lastKey;
+  do {
+    const result = await ddb.send(new ScanCommand({
+      TableName: PLAYERS_TABLE,
+      FilterExpression: "games_played > :min",
+      ExpressionAttributeValues: { ":min": minGames },
+      ExclusiveStartKey: lastKey,
+    }));
+    items.push(...(result.Items || []));
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
+  return items;
+}
+
+// ── Game Attribute Update ───────────────────────────────
+
+export async function updateGameAttr(gameId, attrs) {
+  let updateExpr = "SET";
+  const names = {};
+  const values = {};
+  const parts = [];
+
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v === null) {
+      // REMOVE null attributes instead of setting them
+      continue;
+    }
+    parts.push(` #${k} = :${k}`);
+    names[`#${k}`] = k;
+    values[`:${k}`] = v;
+  }
+
+  // Handle REMOVE for null values
+  const removeParts = Object.entries(attrs)
+    .filter(([, v]) => v === null)
+    .map(([k]) => `#${k}`);
+  const removeNames = Object.fromEntries(
+    Object.entries(attrs)
+      .filter(([, v]) => v === null)
+      .map(([k]) => [`#${k}`, k])
+  );
+
+  let expr = "";
+  const allNames = { ...names, ...removeNames };
+  if (parts.length) expr += `SET${parts.join(",")}`;
+  if (removeParts.length) expr += ` REMOVE ${removeParts.join(", ")}`;
+
+  if (!expr) return;
+
+  const params = {
+    TableName: GAMES_TABLE,
+    Key: { game_id: gameId },
+    UpdateExpression: expr,
+    ExpressionAttributeNames: allNames,
+  };
+  if (Object.keys(values).length) params.ExpressionAttributeValues = values;
+
+  await ddb.send(new UpdateCommand(params));
+}
+
+// ── Delete ──────────────────────────────────────────────
+
+export async function deleteAllScoresForGame(gameId) {
+  const scores = await getScoresForGame(gameId);
+  for (const s of scores) {
+    await ddb.send(
+      new DeleteCommand({
+        TableName: SCORES_TABLE,
+        Key: { game_id: s.game_id, player_hand_key: s.player_hand_key },
+      })
+    );
+  }
+}
+
+export async function deleteGame(gameId) {
+  await ddb.send(
+    new DeleteCommand({ TableName: GAMES_TABLE, Key: { game_id: gameId } })
   );
 }

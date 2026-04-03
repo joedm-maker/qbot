@@ -118,6 +118,9 @@ async function handleViewSubmission(payload) {
     const game = await createNewGame(userId, gameType);
     await postLobbyMessage(game);
 
+    // Notify regular players (>5 games) about the new game
+    await notifyRegulars(game);
+
     // Refresh home tab after modal closes
     await renderHome(userId);
 
@@ -178,8 +181,8 @@ function todayStr() {
 
 async function createNewGame(hostSlackId, gameType) {
   const today = todayStr();
-  const existing = await db.getGamesByDate(today);
-  const gameNumber = existing.length + 1;
+  const maxGameNumber = await db.getMaxGameNumber();
+  const gameNumber = maxGameNumber + 1;
 
   const game = {
     game_id: crypto.randomUUID(),
@@ -239,6 +242,23 @@ async function openStartGameModal(triggerId) {
     trigger_id: triggerId,
     view: blocks.startGameModal(),
   });
+}
+
+async function notifyRegulars(game) {
+  try {
+    const regulars = await db.getRegularPlayers(5);
+    const names = await resolveNames(game.players);
+    const hostName = names.get(game.host_slack_id) || game.host_slack_id;
+    for (const player of regulars) {
+      // Skip the host — they already got a DM from postLobbyMessage
+      if (player.slack_id === game.host_slack_id) continue;
+      await dmUser(player.slack_id, {
+        text: `${hostName} started a QBIM game! Open QBot to join.`,
+      });
+    }
+  } catch (err) {
+    console.warn("Failed to notify regulars:", err.message);
+  }
 }
 
 async function postLobbyMessage(game) {
