@@ -694,10 +694,13 @@ async function updatePlayerStats(game, allScores) {
   }
 
   // Compute screwed/villain counts per player across all hands
+  // No villain on the last hand (no deal afterward)
   const screwedCounts = new Map(); // times_hand_screwed per player
   const screwedOthersCounts = new Map(); // times_screwed_others per player
+  const lastGameHand = gameHands[gameHands.length - 1];
   const hands = [...new Set(allScores.map((s) => s.hand))];
   for (const h of hands) {
+    if (h === lastGameHand) continue; // no villain on last hand
     const handScores = allScores.filter((s) => s.hand === h);
     if (handScores.length < 2) continue;
 
