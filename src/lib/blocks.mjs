@@ -520,7 +520,7 @@ export function adminEditModal(gameId, playerId, playerName, hand, currentWords,
  * Build a player stats card from their DynamoDB player record.
  * Returns an array of Block Kit blocks.
  */
-export function playerCard(player) {
+export function playerCard(player, personalBests) {
   if (!player || !player.games_played) return [];
 
   const name = player.display_name || "Player";
@@ -539,6 +539,12 @@ export function playerCard(player) {
   const screwedOthers = player.times_screwed_others || 0;
   const bh = player.best_hand;
 
+  // Format personal bests as a compact line
+  const pb = personalBests || {};
+  const pbLine = [3, 4, 5, 6, 7, 8, 9, 10]
+    .map((h) => pb[h] || "·")
+    .join("  ");
+
   return [
     divider(),
     header(`📋 ${name}'s Stats`),
@@ -554,6 +560,7 @@ export function playerCard(player) {
       `*😈 Villain*\n${screwedOthers}`,
     ]),
     ...(bh ? [context([`🎯 Best hand: H${bh.hand} (${bh.wins} wins, avg ${bh.avg})`])] : []),
+    context([`🏅 *Personal Best:*  ${pbLine}`]),
     ...(player.incomplete_games ? [context([`⚠️ ${player.incomplete_games} incomplete game${player.incomplete_games > 1 ? "s" : ""}`])] : []),
   ];
 }

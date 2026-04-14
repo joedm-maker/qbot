@@ -167,7 +167,15 @@ export async function renderHome(userId) {
   // Always append the player's stats card
   const player = await db.getPlayer(userId);
   if (player && player.games_played) {
-    viewBlocks.push(...blocks.playerCard(player));
+    // Compute personal bests per hand
+    const allScores = await db.getAllScores();
+    const pb = {};
+    for (const s of allScores) {
+      if (s.player_slack_id !== userId) continue;
+      const raw = s.raw_score || 0;
+      if (!pb[s.hand] || raw > pb[s.hand]) pb[s.hand] = raw;
+    }
+    viewBlocks.push(...blocks.playerCard(player, pb));
   }
 
   await slack().views.publish({
