@@ -4,6 +4,7 @@ import * as db from "../lib/db.mjs";
 import * as blocks from "../lib/blocks.mjs";
 import { getScoreOptions, getHandRange, formatWordsWithPoints } from "../lib/cards.mjs";
 import { renderHome, resolveNames, aggregateScores, findCurrentRound, ADMIN_USER } from "../lib/home.mjs";
+import { createQuicklerTimer, deleteQuicklerTimer } from "../lib/quickler.mjs";
 
 export async function handler(event) {
   const { raw, parsed } = parseSlackBody(event.body, event.isBase64Encoded);
@@ -41,9 +42,11 @@ async function handleAction(payload) {
       const [gameId, handStr] = action.value.split("|");
       const hand = Number(handStr);
       if (hand < 3 || hand > 10 || !Number.isInteger(hand)) return;
+      // Capture Slack's action timestamp as the closest proxy for when the user pressed the button
+      const buttonPressedAt = action.action_ts || null;
       await slack().views.open({
         trigger_id: payload.trigger_id,
-        view: blocks.handScoreModal(gameId, hand),
+        view: blocks.handScoreModal(gameId, hand, buttonPressedAt),
       });
       break;
     }
@@ -132,6 +135,11 @@ async function handleAction(payload) {
     case "qbim_admin_delete_game": {
       if (payload.user.id !== ADMIN_USER) return;
       const gameId = action.value;
+      // Clean up any pending Quickler timer
+      const gameToDelete = await db.getGame(gameId);
+      if (gameToDelete?.quickler_timer_schedule_name) {
+        try { await deleteQuicklerTimer(gameToDelete.quickler_timer_schedule_name); } catch (err) { console.warn("Timer cleanup:", err.message); }
+      }
       await db.deleteAllScoresForGame(gameId);
       await db.deleteGame(gameId);
       // Clear admin preference
@@ -225,14 +233,14 @@ async function handleViewSubmission(payload) {
 
 async function submitScore(payload) {
   const userId = payload.user.id;
-  let game_id, hand;
-  try { ({ game_id, hand } = JSON.parse(payload.view.private_metadata)); } catch { return respond(200); }
+  let game_id, hand, button_pressed_at;
+  try { ({ game_id, hand, button_pressed_at } = JSON.parse(payload.view.private_metadata)); } catch { return respond(200); }
   const values = payload.view.state.values;
   const wordsInput = values.words_block.words?.value || "";
 
   // Empty submission = couldn't form a word, scores 0
   if (!wordsInput.trim()) {
-    return await saveScore(userId, game_id, hand, "", { score: 0, cards: 0, breakdown: "—" });
+    return await saveScore(userId, game_id, hand, "", { score: 0, cards: 0, breakdown: "—" }, button_pressed_at);
   }
 
   // Check for mulligans — reduces max card count
@@ -257,14 +265,14 @@ async function submitScore(payload) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         response_action: "update",
-        view: blocks.scoreChoiceModal(game_id, hand, wordsInput, options),
+        view: blocks.scoreChoiceModal(game_id, hand, wordsInput, options, button_pressed_at),
       }),
     };
   }
 
   // Single option — save directly
   const chosen = options[0];
-  return await saveScore(userId, game_id, hand, wordsInput, chosen);
+  return await saveScore(userId, game_id, hand, wordsInput, chosen, button_pressed_at);
 }
 
 /**
@@ -274,19 +282,19 @@ async function confirmScore(payload) {
   const userId = payload.user.id;
   let meta;
   try { meta = JSON.parse(payload.view.private_metadata); } catch { return respond(200); }
-  const { game_id, hand, words } = meta;
+  const { game_id, hand, words, button_pressed_at } = meta;
   const values = payload.view.state.values;
   const selectedValue = values.score_choice_block.score_choice.selected_option.value;
   let chosen;
   try { chosen = JSON.parse(selectedValue); } catch { return respond(200); }
 
-  return await saveScore(userId, game_id, hand, words, chosen);
+  return await saveScore(userId, game_id, hand, words, chosen, button_pressed_at);
 }
 
 /**
  * Save the score record and handle game state transitions.
  */
-async function saveScore(userId, game_id, hand, wordsInput, chosen) {
+async function saveScore(userId, game_id, hand, wordsInput, chosen, buttonPressedAt = null) {
   const rawScore = chosen.score;
   const breakdown = chosen.breakdown;
 
@@ -304,6 +312,26 @@ async function saveScore(userId, game_id, hand, wordsInput, chosen) {
   // Check if this is an edit (player already submitted for this hand)
   const existingScores = await db.getScoresForGameHand(game_id, hand);
   const isEdit = existingScores.some((s) => s.player_slack_id === userId);
+
+  // Block edits to hands where all eligible players have submitted
+  if (isEdit) {
+    const game = await db.getGame(game_id);
+    const startHands = game.player_start_hands || {};
+    const eligiblePlayers = game.players.filter((pid) => (startHands[pid] || 3) <= hand);
+    if (existingScores.length >= eligiblePlayers.length) {
+      return validationError(`Whoops, sorry that hand is complete. Please wait while we refresh.`);
+    }
+  }
+
+  // Quickler timer validation — check if submission is within the 30s window
+  const gameForTimer = await db.getGame(game_id);
+  if (gameForTimer.game_type === "Quickler" && gameForTimer.quickler_timer_started_at && gameForTimer.quickler_timer_hand === hand && !isEdit) {
+    const timerStart = new Date(gameForTimer.quickler_timer_started_at).getTime() / 1000; // epoch seconds
+    const pressedAt = buttonPressedAt ? Number(buttonPressedAt) : Date.now() / 1000;
+    if (pressedAt - timerStart > 30) {
+      return validationError("Time's up! The 30-second Quickler timer expired.");
+    }
+  }
 
   // Get mulligan count for this hand
   const mulligans = await db.getMulliganCount(game_id, userId, hand);
@@ -334,11 +362,50 @@ async function saveScore(userId, game_id, hand, wordsInput, chosen) {
     });
   }
 
-  // Check if all eligible players submitted this hand
+  // Quickler: start 30s timer on first submission for a hand
   const startHands = game.player_start_hands || {};
   const eligiblePlayers = game.players.filter((pid) => (startHands[pid] || 3) <= hand);
+
+  if (game.game_type === "Quickler" && !isEdit && !game.quickler_timer_started_at) {
+    // First submission for this hand (existingScores was fetched before our write)
+    if (existingScores.length === 0 && eligiblePlayers.length > 1) {
+      const timerStartedAt = new Date().toISOString();
+      const scheduleName = `qbim-timer-${game_id}-hand-${hand}`.replace(/[^a-zA-Z0-9_-]/g, "-");
+      await db.updateGameAttr(game_id, {
+        quickler_timer_started_at: timerStartedAt,
+        quickler_timer_hand: hand,
+        quickler_timer_schedule_name: scheduleName,
+      });
+      await createQuicklerTimer(scheduleName, game_id, hand);
+
+      // DM other eligible players that the clock has started
+      const names = await resolveNames(game.players);
+      const submitterName = names.get(userId) || userId;
+      const otherPlayers = eligiblePlayers.filter((pid) => pid !== userId);
+      for (const pid of otherPlayers) {
+        try {
+          await dmUser(pid, {
+            text: `${submitterName} submitted! You have 30 seconds to submit Hand ${hand}.`,
+          });
+        } catch (err) {
+          console.warn("Failed to DM timer start:", pid, err.message);
+        }
+      }
+    }
+  }
+
+  // Check if all eligible players submitted this hand
   const handScores = await db.getScoresForGameHand(game_id, hand);
   if (handScores.length >= eligiblePlayers.length) {
+    // Hand complete — clear Quickler timer if active
+    if (game.game_type === "Quickler" && game.quickler_timer_schedule_name) {
+      try { await deleteQuicklerTimer(game.quickler_timer_schedule_name); } catch (err) { console.warn("Timer cleanup:", err.message); }
+      await db.updateGameAttr(game_id, {
+        quickler_timer_started_at: null,
+        quickler_timer_hand: null,
+        quickler_timer_schedule_name: null,
+      });
+    }
     // Re-calculate stars; only post channel summary & check game completion on first completion
     await autoAwardStars(game, hand, handScores, !isEdit);
   } else if (eligiblePlayers.length - handScores.length === 1) {
@@ -448,7 +515,7 @@ export async function autoAwardStars(game, hand, handScores, announce = true) {
 
       await db.addDealer(game.game_id, nextDealer);
       const dealerName = names.get(nextDealer) || nextDealer;
-      dealerLine = `\n:point_right: *${dealerName} deals Hand ${hand + 1}*`;
+      dealerLine = `\n:point_right: *${dealerName} deals Hand ${hand + 1}* (${3 + hand + 1} cards each)`;
     }
 
     const msgBlocks = [
@@ -488,6 +555,7 @@ export async function finalizeGame(gameId) {
 
   const allScores = await db.getScoresForGame(gameId);
   await postFinalLeaderboard(game, allScores);
+  // await postSuperlatives(game, allScores); // tabled — building up the pool first
   await updatePlayerStats(game, allScores);
 
   // Refresh all players' home tabs
@@ -505,8 +573,17 @@ async function adminPickEdit(payload) {
   const playerId = values.player_block.player_select.selected_option.value;
   const hand = Number(values.hand_block.hand_select.selected_option.value);
 
+  // Admin can only edit completed hands (not the current in-progress hand)
+  const game = await db.getGame(game_id);
+  const startHands = game.player_start_hands || {};
+  const eligiblePlayers = game.players.filter((pid) => (startHands[pid] || 3) <= hand);
+  const handScores = await db.getScoresForGameHand(game_id, hand);
+  if (handScores.length < eligiblePlayers.length) {
+    return validationError(`Hand ${hand} is still in progress. Admin edits are only allowed on completed hands.`);
+  }
+
   // Look up current words for this player + hand
-  const scores = await db.getScoresForGameHand(game_id, hand);
+  const scores = handScores;
   const existing = scores.find((s) => s.player_slack_id === playerId);
   const currentWords = existing?.words || "";
 
@@ -667,6 +744,133 @@ async function postFinalLeaderboard(game, allScores) {
     { type: "section", text: { type: "mrkdwn", text: `*Game #${game.game_number} — Final Standings*\n\n${lines.join("\n")}` } },
   ];
   await dmAllPlayers(allPlayerIds, { text: "Game complete! Final standings:", blocks: msgBlocks });
+}
+
+async function postSuperlatives(game, allScores) {
+  const allPlayerIds = [...new Set(allScores.map((s) => s.player_slack_id).filter(Boolean))];
+  const names = await resolveNames(allPlayerIds);
+  const gameHands = getHandRange(game.game_type);
+  const lastHand = gameHands[gameHands.length - 1];
+
+  const pool = []; // { id, text } — all eligible superlatives
+
+  // Fetch all historical scores for personal average comparisons
+  const historicalScores = await db.getAllScores();
+  const handSums = {}; // "pid#hand" → { sum, count }
+  for (const s of historicalScores) {
+    if (s.game_id === game.game_id) continue;
+    const k = `${s.player_slack_id}#${s.hand}`;
+    if (!handSums[k]) handSums[k] = { sum: 0, count: 0 };
+    handSums[k].sum += s.raw_score || 0;
+    handSums[k].count++;
+  }
+
+  // Best Hand: largest percentage above personal hand average
+  let bestPctAbove = -Infinity, bestHandPid = null, bestHandNum = null, bestHandScore = 0;
+  for (const s of allScores) {
+    const k = `${s.player_slack_id}#${s.hand}`;
+    const hist = handSums[k];
+    if (!hist || hist.count < 3) continue;
+    const avg = hist.sum / hist.count;
+    if (avg <= 0) continue;
+    const pctAbove = ((s.raw_score || 0) - avg) / avg * 100;
+    if (pctAbove > bestPctAbove) {
+      bestPctAbove = pctAbove;
+      bestHandPid = s.player_slack_id;
+      bestHandNum = s.hand;
+      bestHandScore = s.raw_score || 0;
+    }
+  }
+  if (bestHandPid && bestPctAbove > 0) {
+    pool.push({ id: "best-hand", text: `:muscle: *Best Hand* — ${names.get(bestHandPid)} with ${bestHandScore} pts on Hand ${bestHandNum}` });
+  }
+
+  // Star Player: most stars
+  const starsByPlayer = {};
+  for (const s of allScores) {
+    starsByPlayer[s.player_slack_id] = (starsByPlayer[s.player_slack_id] || 0) + (s.stars || 0);
+  }
+  let maxStars = 0, starPid = null;
+  for (const [pid, count] of Object.entries(starsByPlayer)) {
+    if (count > maxStars) { maxStars = count; starPid = pid; }
+  }
+  if (starPid && maxStars > 0) {
+    pool.push({ id: "star-player", text: `:star: *Star Player* — ${names.get(starPid)} with ${maxStars} star${maxStars > 1 ? "s" : ""}` });
+  }
+
+  // Biggest Villain: most villain hands (skip last hand)
+  const villainCounts = {};
+  for (const h of gameHands) {
+    if (h === lastHand) continue;
+    const handScores = allScores.filter((s) => s.hand === h);
+    if (handScores.length < 2) continue;
+    const maxEff = Math.max(...handScores.map((s) => (s.raw_score || 0) + (s.stars || 0) * 10));
+    const maxRaw = Math.max(...handScores.map((s) => s.raw_score || 0));
+    const effWinners = handScores.filter((s) => (s.raw_score || 0) + (s.stars || 0) * 10 === maxEff);
+    const rawWinners = handScores.filter((s) => (s.raw_score || 0) === maxRaw);
+    if (effWinners.length === 1 && rawWinners.length === 1 && effWinners[0].player_slack_id !== rawWinners[0].player_slack_id) {
+      const vPid = effWinners[0].player_slack_id;
+      villainCounts[vPid] = (villainCounts[vPid] || 0) + 1;
+    }
+  }
+  let maxVillain = 0, villainPid = null;
+  for (const [pid, count] of Object.entries(villainCounts)) {
+    if (count > maxVillain) { maxVillain = count; villainPid = pid; }
+  }
+  if (villainPid && maxVillain > 0) {
+    pool.push({ id: "villain", text: `:smiling_imp: *Biggest Villain* — ${names.get(villainPid)} stole ${maxVillain} hand${maxVillain > 1 ? "s" : ""}` });
+  }
+
+  // Most Improved: biggest positive difference between first half and second half avg
+  const midpoint = gameHands[Math.floor(gameHands.length / 2)];
+  let bestImprovement = -Infinity, improvedPid = null;
+  for (const pid of allPlayerIds) {
+    const firstHalf = allScores.filter((s) => s.player_slack_id === pid && s.hand < midpoint);
+    const secondHalf = allScores.filter((s) => s.player_slack_id === pid && s.hand >= midpoint);
+    if (firstHalf.length === 0 || secondHalf.length === 0) continue;
+    const avgFirst = firstHalf.reduce((sum, s) => sum + (s.raw_score || 0), 0) / firstHalf.length;
+    const avgSecond = secondHalf.reduce((sum, s) => sum + (s.raw_score || 0), 0) / secondHalf.length;
+    const improvement = avgSecond - avgFirst;
+    if (improvement > bestImprovement) {
+      bestImprovement = improvement;
+      improvedPid = pid;
+    }
+  }
+  if (improvedPid && bestImprovement > 0) {
+    pool.push({ id: "most-improved", text: `:chart_with_upwards_trend: *Most Improved* — ${names.get(improvedPid)} (+${Math.round(bestImprovement)} avg pts in second half)` });
+  }
+
+  // Strong Finish: highest raw score on the last hand (must be > 62)
+  const firstHand = gameHands[0];
+  const lastHandScores = allScores.filter((s) => s.hand === lastHand);
+  if (lastHandScores.length > 0) {
+    const best = lastHandScores.reduce((a, b) => ((a.raw_score || 0) > (b.raw_score || 0) ? a : b));
+    if ((best.raw_score || 0) > 62) {
+      pool.push({ id: "strong-finish", text: `:checkered_flag: *Strong Finish* — ${names.get(best.player_slack_id)} with ${best.raw_score} pts on Hand ${lastHand}` });
+    }
+  }
+
+  // Strong Start: highest raw score on the first hand (must be > 20)
+  const firstHandScores = allScores.filter((s) => s.hand === firstHand);
+  if (firstHandScores.length > 0) {
+    const best = firstHandScores.reduce((a, b) => ((a.raw_score || 0) > (b.raw_score || 0) ? a : b));
+    if ((best.raw_score || 0) > 20) {
+      pool.push({ id: "strong-start", text: `:rocket: *Strong Start* — ${names.get(best.player_slack_id)} with ${best.raw_score} pts on Hand ${firstHand}` });
+    }
+  }
+
+  // Pick up to 4 superlatives from the pool, rotating via game_number
+  if (pool.length === 0) return;
+  const maxAwards = Math.min(4, pool.length);
+  // Shuffle deterministically based on game_number so different games highlight different things
+  const seeded = pool.map((a, i) => ({ ...a, sort: ((game.game_number || 0) * 7 + i * 13) % 97 }));
+  seeded.sort((a, b) => a.sort - b.sort);
+  const awards = seeded.slice(0, maxAwards).map((a) => a.text);
+
+  const msgBlocks = [
+    { type: "section", text: { type: "mrkdwn", text: `*Game #${game.game_number} — Superlatives*\n\n${awards.join("\n")}` } },
+  ];
+  await dmAllPlayers(allPlayerIds, { text: "Game superlatives:", blocks: msgBlocks });
 }
 
 // ── Player Stats Update ────────────────────────────────

@@ -166,7 +166,7 @@ All state is in DynamoDB. No in-memory state between Lambda invocations. The Sla
 
 **game-flow.mjs** — Handles: `app_home_opened`, `qbim_start_game`, `qbim_join_game`, `qbim_end_game`, `qbim_mulligan`, `qbim_toggle_score`, `qbim_start_game_submit`, `qbim_end_game_confirm`. Creates games, manages joins (including mid-game with `player_start_hands`), handles drops with round-completion checks, posts lobby DMs.
 
-**score-entry.mjs** — Handles: `qbim_open_hand_modal`, `qbim_finalize_game`, `qbim_submit_score`, `qbim_confirm_score`, `qbim_admin_*`. Core scoring logic: `saveScore()` validates cards, checks mulligans, writes to DB. `autoAwardStars()` computes longest word/most words, awards stars, announces dealer, DMs round summary. `finalizeGame()` completes game, posts standings, updates player stats. Exports: `autoAwardStars`, `finalizeGame`.
+**score-entry.mjs** — Handles: `qbim_open_hand_modal`, `qbim_finalize_game`, `qbim_submit_score`, `qbim_confirm_score`, `qbim_admin_*`. Core scoring logic: `saveScore()` validates cards, checks mulligans, writes to DB, and blocks player edits on completed hands (all eligible players submitted) — returns validation error: "Whoops, sorry that hand is complete. Please wait while we refresh." `autoAwardStars(game, hand, handScores, announce)` computes longest word/most words, awards stars, announces dealer with card count (`(${3 + hand + 1} cards each)`), DMs round summary; `announce=true` on first completion (DMs + game state transitions), `announce=false` on edits (recalculate stars only, no DMs). `adminPickEdit()` restricts admin edits to completed hands only — returns validation error if hand is still in progress. `adminSaveEdit()` overwrites the score record and recalculates stars for the edited hand via `autoAwardStars(…, false)`. `postSuperlatives()` builds a pool of game superlatives (Best Hand, Star Player, Biggest Villain, Most Improved, Strong Finish >62, Strong Start >20), picks up to 4 rotating by game_number — currently commented out in `finalizeGame()`, tabled until the pool is larger. `finalizeGame()` completes game, posts standings, updates player stats. Exports: `autoAwardStars`, `finalizeGame`.
 
 **stats-api.mjs** — GET endpoints: `/stats/players` (enriched with computed stats), `/stats/games` (COMPLETE only, with winners), `/stats/scores` (normalized player_id), `/stats/live` (active game with scores and player names). Full table scans with pagination. CORS enabled.
 
@@ -180,7 +180,7 @@ All state is in DynamoDB. No in-memory state between Lambda invocations. The Sla
 
 **cards.mjs** — Card deck definition (A-Z + QU/IN/ER/TH/CL digraphs with point values). `getScoreOptions(input, maxCards)` — enumerates all possible card breakdowns, handles `+`/space/comma separators, hyphen-asserted boundaries, digraph ambiguity. Groups by score, resolves IN/ER by hand fit. Returns options array for single-select or radio choice.
 
-**db.mjs** — DynamoDB operations: `getGame`, `getGamesByDate`, `getRecentGames`, `createGame`, `updateGameStatus`, `addPlayerToGame`, `setPlayerStartHand`, `removePlayerFromGame`, `addDealer`, `addMulligan`, `getMulliganCount`, `initMulligansMap`, `putScore`, `getScoresForGame`, `getScoresForGameHand`, `updateScoreStars`, `getPlayer`, `upsertPlayer`, `setPlayerPreference`, `initPreferences`, `incrementPlayerStats`.
+**db.mjs** — DynamoDB operations: `getGame`, `getGamesByDate`, `getRecentGames`, `getMaxGameNumber`, `createGame`, `updateGameStatus`, `addPlayerToGame`, `setPlayerStartHand`, `removePlayerFromGame`, `addDealer`, `addMulligan`, `setMulliganCount`, `getMulliganCount`, `initMulligansMap`, `putScore`, `getAllScores` (full table scan with pagination — used by `postSuperlatives()` for historical averages), `getScoresForGame`, `getScoresForGameHand`, `updateScoreStars`, `getPlayer`, `upsertPlayer`, `setPlayerPreference`, `initPreferences`, `incrementPlayerStats`, `getRegularPlayers`, `updateGameAttr`, `deleteAllScoresForGame`, `deleteGame`.
 
 **slack.mjs** — `slack()` returns cached WebClient. `setMockClient(mock)` for testing. `dmUser(userId, {text, blocks})` opens conversation + posts. `dmAllPlayers(playerIds, {text, blocks})` DMs everyone. `CHANNEL()` returns channel ID (unused now — all messages via DM).
 
@@ -197,8 +197,8 @@ All state is in DynamoDB. No in-memory state between Lambda invocations. The Sla
 1. User clicks "Enter Hand N Score" → `qbim_open_hand_modal` → `handScoreModal()` with words input
 2. User submits → `qbim_submit_score` → `submitScore()` → `getScoreOptions()` parses words, checks mulligans
 3. If multiple breakdowns: returns `scoreChoiceModal()` → user picks → `qbim_confirm_score` → `confirmScore()`
-4. `saveScore()` writes to qbim-scores → checks OPEN→ACTIVE transition → checks round completion
-5. If round complete: `autoAwardStars()` → determines longest word/most words → updates star fields → computes next dealer → DMs round summary to all → refreshes all home tabs
+4. `saveScore()` checks if this is an edit — if so, verifies the hand is not yet complete (all eligible players submitted). If the hand is complete, returns a validation error and blocks the edit. Otherwise writes to qbim-scores → checks OPEN→ACTIVE transition → checks round completion
+5. If round complete: `autoAwardStars()` → determines longest word/most words → updates star fields → computes next dealer → DMs round summary (with card count) to all → refreshes all home tabs
 
 ### Flow 3: Auto Star Award + Dealer
 1. `autoAwardStars(game, hand, handScores, announce)` in score-entry.mjs
@@ -211,8 +211,8 @@ All state is in DynamoDB. No in-memory state between Lambda invocations. The Sla
 ### Flow 4: Admin Edit
 1. Office account opens Home tab → `renderAdminHome()` shows compact admin panel
 2. Admin clicks "Edit Score" → `qbim_admin_edit_picker` → `adminPickerModal()` with player + hand dropdowns
-3. Admin selects and submits → `qbim_admin_pick_edit` → looks up current words → returns `adminEditModal()` pre-filled
-4. Admin saves → `qbim_admin_save_edit` → recalculates score from words → overwrites score record → recalculates stars for that hand → refreshes admin home
+3. Admin selects and submits → `qbim_admin_pick_edit` → validates hand is complete (not in-progress) — returns validation error if players are still submitting. Looks up current words → returns `adminEditModal()` pre-filled
+4. Admin saves → `qbim_admin_save_edit` → recalculates score from words → overwrites score record → explicitly recalculates stars for that hand via `autoAwardStars(…, false)` → refreshes admin home
 
 ### Flow 5: Game Finalization
 1. After Hand 10, review mode: Home tab shows full scoreboard + "Finalize Game" button
@@ -298,6 +298,11 @@ There are no isolated unit tests. Testing is done through integration tests that
 
 ### Incomplete Game Rule (Critical)
 A game counts as "complete" for a player ONLY if they played all 8 hands (H3-H10). Enforced in `updatePlayerStats`, stats-api `getPlayers`, dashboard `filterData.js`, and Score Trend chart. The `incomplete_games` field exists specifically for data transparency.
+
+### Edit Locking
+- Players cannot edit scores after a hand is complete (all eligible players submitted). Server-side check in `saveScore()`.
+- Admin can only edit completed hands (not in-progress). Server-side check in `adminPickEdit()`.
+- Both return Slack modal validation errors to the user.
 
 ### Star Rules
 - 3+ players required

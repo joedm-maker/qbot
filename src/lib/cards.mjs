@@ -20,8 +20,7 @@
  * Get the hand range for a game type.
  */
 export function getHandRange(gameType) {
-  // Both QBIM and Quickler use hands 3-10.
-  // This function exists for future variants with different hand ranges.
+  // QBIM, Quickler, and AutoQ all use hands 3-10.
   return [3, 4, 5, 6, 7, 8, 9, 10];
 }
 
@@ -119,7 +118,7 @@ function parseExplicit(upper) {
  * Find ALL possible card breakdowns for an unhyphenated word.
  * Returns an array of card arrays, e.g. [["QU","I","Z"], ["Q","U","I","Z"]]
  */
-function allBreakdowns(upper) {
+export function allBreakdowns(upper) {
   // Strip any non-alpha characters
   const clean = upper.replace(/[^A-Z]/g, "");
   if (!clean) return [];

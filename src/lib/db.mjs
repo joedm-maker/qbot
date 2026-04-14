@@ -210,6 +210,36 @@ export async function putScore(score) {
   await ddb.send(new PutCommand({ TableName: SCORES_TABLE, Item: score }));
 }
 
+export async function getAllScores() {
+  const items = [];
+  let lastKey;
+  do {
+    const result = await ddb.send(new ScanCommand({
+      TableName: SCORES_TABLE,
+      ExclusiveStartKey: lastKey,
+    }));
+    items.push(...(result.Items || []));
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
+  return items;
+}
+
+export async function getScoresWithWords() {
+  const items = [];
+  let lastKey;
+  do {
+    const result = await ddb.send(new ScanCommand({
+      TableName: SCORES_TABLE,
+      FilterExpression: "raw_score > :z AND words <> :empty AND breakdown <> :empty",
+      ExpressionAttributeValues: { ":z": 0, ":empty": "" },
+      ExclusiveStartKey: lastKey,
+    }));
+    items.push(...(result.Items || []));
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
+  return items;
+}
+
 export async function getScoresForGame(gameId) {
   const { Items } = await ddb.send(
     new QueryCommand({

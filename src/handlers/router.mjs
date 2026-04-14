@@ -10,6 +10,7 @@ import { handler as gameFlowHandler } from "./game-flow.mjs";
 import { handler as scoreEntryHandler } from "./score-entry.mjs";
 import { handler as leaderboardHandler } from "./leaderboard.mjs";
 import { handleStatsRequest } from "./stats-api.mjs";
+import { handler as autoqHandler } from "./autoq.mjs";
 
 // Action IDs handled by each module
 const GAME_FLOW_ACTIONS = new Set([
@@ -32,6 +33,18 @@ const SCORE_ACTIONS = new Set([
 const SCORE_CALLBACKS = new Set([
   "qbim_submit_score",
   "qbim_confirm_score",
+]);
+
+const AUTOQ_ACTIONS = new Set([
+  "autoq_start",
+  "autoq_open_hand_modal",
+  "autoq_mulligan",
+  "autoq_quit",
+]);
+const AUTOQ_CALLBACKS = new Set([
+  "autoq_start_submit",
+  "autoq_submit_score",
+  "autoq_confirm_score",
 ]);
 
 const LEADERBOARD_ACTIONS = new Set([
@@ -73,6 +86,7 @@ export async function handler(event) {
     const actionId = parsed.actions[0].action_id;
     if (GAME_FLOW_ACTIONS.has(actionId)) return gameFlowHandler(event);
     if (SCORE_ACTIONS.has(actionId)) return scoreEntryHandler(event);
+    if (AUTOQ_ACTIONS.has(actionId)) return autoqHandler(event);
     if (LEADERBOARD_ACTIONS.has(actionId)) return leaderboardHandler(event);
     // Admin actions (dynamic IDs)
     if (actionId.startsWith("qbim_admin_")) return scoreEntryHandler(event);
@@ -82,6 +96,7 @@ export async function handler(event) {
   if (parsed.type === "view_submission") {
     const callbackId = parsed.view?.callback_id;
     if (GAME_FLOW_CALLBACKS.has(callbackId)) return gameFlowHandler(event);
+    if (AUTOQ_CALLBACKS.has(callbackId)) return autoqHandler(event);
     if (SCORE_CALLBACKS.has(callbackId)) return scoreEntryHandler(event);
     if (callbackId === "qbim_admin_pick_edit") return scoreEntryHandler(event);
     if (callbackId === "qbim_admin_save_edit") return scoreEntryHandler(event);

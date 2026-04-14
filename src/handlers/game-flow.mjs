@@ -4,6 +4,7 @@ import { slack, CHANNEL, dmUser, dmAllPlayers } from "../lib/slack.mjs";
 import * as db from "../lib/db.mjs";
 import * as blocks from "../lib/blocks.mjs";
 import { renderHome, resolveNames, aggregateScores } from "../lib/home.mjs";
+import { deleteQuicklerTimer } from "../lib/quickler.mjs";
 
 export async function handler(event) {
   const { raw, parsed } = parseSlackBody(event.body, event.isBase64Encoded);
@@ -115,6 +116,15 @@ async function handleViewSubmission(payload) {
     const gameType =
       payload.view.state.values.game_type_block.game_type.selected_option.value;
 
+    // AutoQ: open the opponent-count modal instead of creating a regular game
+    if (gameType === "AutoQ") {
+      const { autoqStartModal } = await import("../lib/autoq-blocks.mjs");
+      return respond(200, {
+        response_action: "update",
+        view: autoqStartModal(),
+      });
+    }
+
     const game = await createNewGame(userId, gameType);
     await postLobbyMessage(game);
 
@@ -136,10 +146,26 @@ async function handleViewSubmission(payload) {
     if (choice === "stay") {
       // Do nothing, just close the modal
     } else if (choice === "drop") {
+      // Clean up Quickler timer if the dropping player triggers it
+      const gameBeforeDrop = await db.getGame(game_id);
+      if (gameBeforeDrop.quickler_timer_schedule_name) {
+        // Check if dropping makes the hand complete (handled below) — clean up timer
+        const dropScores = await db.getScoresForGameHand(game_id, gameBeforeDrop.quickler_timer_hand);
+        const dropStartHands = gameBeforeDrop.player_start_hands || {};
+        const dropEligible = gameBeforeDrop.players.filter((pid) => pid !== userId && (dropStartHands[pid] || 3) <= gameBeforeDrop.quickler_timer_hand);
+        const dropSubmitted = dropScores.filter((s) => s.player_slack_id !== userId);
+        if (dropSubmitted.length >= dropEligible.length) {
+          try { await deleteQuicklerTimer(gameBeforeDrop.quickler_timer_schedule_name); } catch (err) { console.warn("Timer cleanup:", err.message); }
+          await db.updateGameAttr(game_id, { quickler_timer_started_at: null, quickler_timer_hand: null, quickler_timer_schedule_name: null });
+        }
+      }
       await db.removePlayerFromGame(game_id, userId);
       const game = await db.getGame(game_id);
       // If no players left, finish the game
       if (!game.players || game.players.length === 0) {
+        if (game.quickler_timer_schedule_name) {
+          try { await deleteQuicklerTimer(game.quickler_timer_schedule_name); } catch (err) { console.warn("Timer cleanup:", err.message); }
+        }
         await db.updateGameStatus(game_id, "COMPLETE", { completed_at: new Date().toISOString() });
       } else {
         // Check if any hand is now complete with fewer players
@@ -157,6 +183,11 @@ async function handleViewSubmission(payload) {
         }
       }
     } else if (choice === "finish") {
+      // Clean up any pending Quickler timer
+      const gameBeforeEnd = await db.getGame(game_id);
+      if (gameBeforeEnd.quickler_timer_schedule_name) {
+        try { await deleteQuicklerTimer(gameBeforeEnd.quickler_timer_schedule_name); } catch (err) { console.warn("Timer cleanup:", err.message); }
+      }
       await db.updateGameStatus(game_id, "COMPLETE", { completed_at: new Date().toISOString() });
       const game = await db.getGame(game_id);
       const scores = await db.getScoresForGame(game_id);

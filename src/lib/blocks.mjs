@@ -62,11 +62,23 @@ export function homeActive(game, playerNames, round, totals, rawScores, viewerId
     divider(),
   ];
 
+  // Quickler timer info
+  const hasQuicklerTimer = game.game_type === "Quickler" && game.quickler_timer_started_at && game.quickler_timer_hand === (round && round.hand);
+  let quicklerTimerNote = "";
+  if (hasQuicklerTimer) {
+    const elapsed = Math.floor((Date.now() - new Date(game.quickler_timer_started_at).getTime()) / 1000);
+    const remaining = Math.max(0, 30 - elapsed);
+    quicklerTimerNote = remaining > 0 ? `⏱️ *Quickler Timer: ~${remaining}s remaining!*` : "⏱️ *Time's up!*";
+  }
+
   if (round && round.hand) {
     const mulliganNote = round.mulligans > 0
       ? ` (${round.mulligans} mulligan${round.mulligans > 1 ? "s" : ""} — max ${round.maxCards} cards)`
       : "";
     if (round.canSubmit) {
+      if (hasQuicklerTimer) {
+        blks.push(section(`🚨 ${quicklerTimerNote} — Submit now!`));
+      }
       const btns = [
         button(`Enter Hand ${round.hand} Score`, "qbim_open_hand_modal", `${game.game_id}|${round.hand}`),
         button("Mulligan", "qbim_mulligan", `${game.game_id}|${round.hand}`),
@@ -80,6 +92,9 @@ export function homeActive(game, playerNames, round, totals, rawScores, viewerId
         ? `✅ You submitted: *${round.myWords}* (${round.myScore} pts)${mulliganNote}`
         : `⏳ Waiting for other players to finish *Hand ${round.hand}*...`;
       blks.push(section(myLine));
+      if (hasQuicklerTimer) {
+        blks.push(context([quicklerTimerNote]));
+      }
       if (missingNames && missingNames.length > 0) {
         blks.push(context([`⏳ Waiting on: ${missingNames.join(", ")}`]));
       }
@@ -223,7 +238,7 @@ export function startGameModal() {
           type: "static_select",
           action_id: "game_type",
           initial_option: option("QBIM", "QBIM"),
-          options: [option("QBIM", "QBIM"), option("Quickler", "Quickler")],
+          options: [option("QBIM", "QBIM"), option("Quickler", "Quickler"), option("AutoQ", "AutoQ")],
         },
       },
     ],
@@ -270,11 +285,11 @@ export function endGameModal(gameId) {
 /**
  * Hand score entry modal.
  */
-export function handScoreModal(gameId, hand) {
+export function handScoreModal(gameId, hand, buttonPressedAt = null) {
   return {
     type: "modal",
     callback_id: "qbim_submit_score",
-    private_metadata: JSON.stringify({ game_id: gameId, hand }),
+    private_metadata: JSON.stringify({ game_id: gameId, hand, button_pressed_at: buttonPressedAt }),
     title: text(`Hand ${hand}`),
     submit: text("Submit"),
     blocks: [
@@ -303,7 +318,7 @@ export function handScoreModal(gameId, hand) {
  * Score choice modal — shown when multiple score interpretations exist.
  * E.g. "quiz" could be QU-I-Z (25 pts) or Q-U-I-Z (35 pts).
  */
-export function scoreChoiceModal(gameId, hand, words, options) {
+export function scoreChoiceModal(gameId, hand, words, options, buttonPressedAt = null) {
   const radioOptions = options.map((opt) => ({
     text: { type: "mrkdwn", text: `*${opt.score} pts* — ${opt.breakdown} (${opt.cards} cards)` },
     value: JSON.stringify({ score: opt.score, cards: opt.cards, breakdown: opt.breakdown }),
@@ -312,7 +327,7 @@ export function scoreChoiceModal(gameId, hand, words, options) {
   return {
     type: "modal",
     callback_id: "qbim_confirm_score",
-    private_metadata: JSON.stringify({ game_id: gameId, hand, words }),
+    private_metadata: JSON.stringify({ game_id: gameId, hand, words, button_pressed_at: buttonPressedAt }),
     title: text(`Hand ${hand} — Pick Score`),
     submit: text("Confirm"),
     blocks: [
