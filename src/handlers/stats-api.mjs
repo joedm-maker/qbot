@@ -40,6 +40,13 @@ async function getGames() {
   const games = await scanAll("qbim-games");
   const scores = await scanAll("qbim-scores");
 
+  // Build lookup map once
+  const scoresByGame = {};
+  for (const s of scores) {
+    if (!scoresByGame[s.game_id]) scoresByGame[s.game_id] = [];
+    scoresByGame[s.game_id].push(s);
+  }
+
   const completed = games
     .filter((g) => g.status === "COMPLETE")
     .sort((a, b) => (b.game_number || 0) - (a.game_number || 0));
@@ -47,7 +54,7 @@ async function getGames() {
   // Add winner if missing
   for (const g of completed) {
     if (!g.winner) {
-      const gameScores = scores.filter((s) => s.game_id === g.game_id);
+      const gameScores = scoresByGame[g.game_id] || [];
       const totals = {};
       for (const s of gameScores) {
         const pid = s.player_slack_id;
@@ -75,10 +82,20 @@ async function getPlayers() {
   const scores = rawScores.map((s) => ({ ...s, player_id: s.player_slack_id }));
   const games = rawGames.filter((g) => g.status === "COMPLETE");
 
+  // Build lookup maps once
+  const scoresByGameId = {};
+  const scoresByPlayerId = {};
+  for (const s of scores) {
+    if (!scoresByGameId[s.game_id]) scoresByGameId[s.game_id] = [];
+    scoresByGameId[s.game_id].push(s);
+    if (!scoresByPlayerId[s.player_id]) scoresByPlayerId[s.player_id] = [];
+    scoresByPlayerId[s.player_id].push(s);
+  }
+
   // Add winner to games
   for (const g of games) {
     if (!g.winner) {
-      const gs = scores.filter((s) => s.game_id === g.game_id);
+      const gs = scoresByGameId[g.game_id] || [];
       const totals = {};
       for (const s of gs) { totals[s.player_id] = (totals[s.player_id] || 0) + (s.raw_score || 0) + (s.stars || 0) * 10; }
       const e = Object.entries(totals);
@@ -92,7 +109,7 @@ async function getPlayers() {
 
   // Enrich with computed stats
   for (const [pid, p] of Object.entries(players)) {
-    const playerScores = scores.filter((s) => s.player_id === pid);
+    const playerScores = scoresByPlayerId[pid] || [];
 
     const scoresByGame = {};
     for (const s of playerScores) {
