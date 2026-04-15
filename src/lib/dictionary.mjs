@@ -41,7 +41,7 @@ async function callMW(word) {
   const url = `${MW_BASE}/${encodeURIComponent(word)}?key=${MW_KEY}`;
   // Hard timeout so a slow MW response never eats Slack's 3s budget
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 1500);
+  const timeout = setTimeout(() => controller.abort(), 900);
   try {
     const r = await fetch(url, { signal: controller.signal });
     if (!r.ok) {
