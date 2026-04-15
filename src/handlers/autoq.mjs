@@ -14,6 +14,7 @@ import { QUIDDLER_DECK } from "../lib/autoq-deck.mjs";
 import * as autoqDb from "../lib/autoq-db.mjs";
 import * as autoqBlocks from "../lib/autoq-blocks.mjs";
 import { renderHome } from "../lib/home.mjs";
+import { validateWords } from "../lib/dictionary.mjs";
 
 export async function handler(event) {
   const { raw, parsed } = parseSlackBody(event.body, event.isBase64Encoded);
@@ -255,6 +256,14 @@ async function submitScore(payload) {
       return validationError("words_block", `Too many cards — you can only play ${maxCards} cards this hand.`);
     }
     return validationError("words_block", "Those cards aren't in your dealt hand.");
+  }
+
+  // Dictionary validation — block invalid words
+  const dictCheck = await validateWords(wordsInput);
+  if (dictCheck.invalid.length) {
+    const bad = dictCheck.invalid.map((w) => `*${w.word}*`).join(", ");
+    const s = dictCheck.invalid.length > 1 ? "s" : "";
+    return validationError("words_block", `Not in the dictionary: ${bad}. Try other word${s}.`);
   }
 
   if (options.length === 1) {
