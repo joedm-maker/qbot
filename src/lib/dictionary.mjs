@@ -39,8 +39,11 @@ async function callMW(word) {
     return { error: true };
   }
   const url = `${MW_BASE}/${encodeURIComponent(word)}?key=${MW_KEY}`;
+  // Hard timeout so a slow MW response never eats Slack's 3s budget
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1500);
   try {
-    const r = await fetch(url);
+    const r = await fetch(url, { signal: controller.signal });
     if (!r.ok) {
       console.warn(`MW ${word}: HTTP ${r.status}`);
       return { error: true };
@@ -67,6 +70,8 @@ async function callMW(word) {
   } catch (e) {
     console.warn(`MW ${word}: error`, e.message);
     return { error: true };
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -143,20 +148,24 @@ export async function lookupWord(raw) {
 export async function validateWords(wordsInput) {
   const tokens = String(wordsInput || "").replace(/[\s,+]+/g, " ").trim().split(" ").filter(Boolean);
   const seen = new Set();
-  const valid = [];
-  const invalid = [];
-
+  const uniqueWords = [];
   for (const token of tokens) {
     const word = cleanWord(token);
     if (!word || seen.has(word)) continue;
     seen.add(word);
-    const result = await lookupWord(word);
-    if (result.valid) {
-      valid.push({ word, ...result });
-    } else {
-      invalid.push({ word });
-    }
+    uniqueWords.push(word);
   }
 
+  // Look up all words in parallel
+  const results = await Promise.all(uniqueWords.map((w) => lookupWord(w)));
+
+  const valid = [];
+  const invalid = [];
+  for (let i = 0; i < uniqueWords.length; i++) {
+    const word = uniqueWords[i];
+    const result = results[i];
+    if (result.valid) valid.push({ word, ...result });
+    else invalid.push({ word });
+  }
   return { valid, invalid };
 }
