@@ -5,6 +5,7 @@ import * as blocks from "../lib/blocks.mjs";
 import { getScoreOptions, getHandRange, formatWordsWithPoints } from "../lib/cards.mjs";
 import { renderHome, resolveNames, aggregateScores, findCurrentRound, ADMIN_USER } from "../lib/home.mjs";
 import { createQuicklerTimer, deleteQuicklerTimer } from "../lib/quickler.mjs";
+import { validateWords } from "../lib/dictionary.mjs";
 
 export async function handler(event) {
   const { raw, parsed } = parseSlackBody(event.body, event.isBase64Encoded);
@@ -258,6 +259,14 @@ async function submitScore(payload) {
     return validationError(`Too many cards for Hand ${hand}${mulligans > 0 ? ` with ${mulligans} mulligan${mulligans > 1 ? "s" : ""}` : ""} (max ${maxCards} cards).`);
   }
 
+  // Dictionary validation — block invalid words
+  const dictCheck = await validateWords(wordsInput);
+  if (dictCheck.invalid.length) {
+    const bad = dictCheck.invalid.map((w) => `*${w.word}*`).join(", ");
+    const s = dictCheck.invalid.length > 1 ? "s" : "";
+    return validationError(`Not in the dictionary: ${bad}. Try other word${s}.`);
+  }
+
   // Multiple score options — let player choose
   if (options.length > 1) {
     return {
@@ -353,6 +362,15 @@ async function saveScore(userId, game_id, hand, wordsInput, chosen, buttonPresse
     star_most_words: false,
     submitted_at: new Date().toISOString(),
   });
+
+  // Increment play count for each unique word (used by Phase 4 definition-DM logic).
+  // Skip on edits so we don't double-count. Fire and forget — don't block submission on cache writes.
+  if (!isEdit && words.length) {
+    const unique = new Set(words.map((w) => w.toLowerCase().replace(/[^a-z]/g, "")).filter(Boolean));
+    for (const w of unique) {
+      db.incrementDictionaryPlayCount(w).catch(() => { /* ignore */ });
+    }
+  }
 
   // If this is the first hand 3 score, transition OPEN → ACTIVE
   const game = await db.getGame(game_id);

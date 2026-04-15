@@ -15,6 +15,8 @@ const ddb = DynamoDBDocumentClient.from(client);
 const GAMES_TABLE = process.env.GAMES_TABLE;
 const SCORES_TABLE = process.env.SCORES_TABLE;
 const PLAYERS_TABLE = process.env.PLAYERS_TABLE;
+const DICTIONARY_TABLE = process.env.DICTIONARY_TABLE;
+const VOTES_TABLE = process.env.VOTES_TABLE;
 
 // ── Games ──────────────────────────────────────────────
 
@@ -432,5 +434,64 @@ export async function deleteAllScoresForGame(gameId) {
 export async function deleteGame(gameId) {
   await ddb.send(
     new DeleteCommand({ TableName: GAMES_TABLE, Key: { game_id: gameId } })
+  );
+}
+
+// ── Dictionary ─────────────────────────────────────────
+
+export async function getDictionaryWord(word) {
+  if (!DICTIONARY_TABLE) return null;
+  const { Item } = await ddb.send(
+    new GetCommand({ TableName: DICTIONARY_TABLE, Key: { word } })
+  );
+  return Item || null;
+}
+
+export async function putDictionaryWord(item) {
+  if (!DICTIONARY_TABLE) return;
+  await ddb.send(
+    new PutCommand({ TableName: DICTIONARY_TABLE, Item: item })
+  );
+}
+
+export async function incrementDictionaryPlayCount(word) {
+  if (!DICTIONARY_TABLE) return;
+  await ddb.send(
+    new UpdateCommand({
+      TableName: DICTIONARY_TABLE,
+      Key: { word },
+      UpdateExpression: "ADD play_count :one",
+      ExpressionAttributeValues: { ":one": 1 },
+    })
+  );
+}
+
+// ── Votes ──────────────────────────────────────────────
+
+export async function getVote(voteId) {
+  if (!VOTES_TABLE) return null;
+  const { Item } = await ddb.send(
+    new GetCommand({ TableName: VOTES_TABLE, Key: { vote_id: voteId } })
+  );
+  return Item || null;
+}
+
+export async function putVote(vote) {
+  if (!VOTES_TABLE) return;
+  await ddb.send(
+    new PutCommand({ TableName: VOTES_TABLE, Item: vote })
+  );
+}
+
+export async function updateVoteStatus(voteId, status) {
+  if (!VOTES_TABLE) return;
+  await ddb.send(
+    new UpdateCommand({
+      TableName: VOTES_TABLE,
+      Key: { vote_id: voteId },
+      UpdateExpression: "SET #s = :s",
+      ExpressionAttributeNames: { "#s": "status" },
+      ExpressionAttributeValues: { ":s": status },
+    })
   );
 }
