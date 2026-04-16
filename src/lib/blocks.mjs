@@ -285,7 +285,13 @@ export function endGameModal(gameId) {
 /**
  * Hand score entry modal.
  */
-export function handScoreModal(gameId, hand, buttonPressedAt = null) {
+export function handScoreModal(gameId, hand, buttonPressedAt = null, prefillWords = "") {
+  const wordsInput = {
+    type: "plain_text_input",
+    action_id: "words",
+    placeholder: text("e.g. quiz or qu-i-z (leave blank if no words)"),
+  };
+  if (prefillWords) wordsInput.initial_value = prefillWords;
   return {
     type: "modal",
     callback_id: "qbim_submit_score",
@@ -298,11 +304,7 @@ export function handScoreModal(gameId, hand, buttonPressedAt = null) {
         block_id: "words_block",
         label: text("Words Played"),
         optional: true,
-        element: {
-          type: "plain_text_input",
-          action_id: "words",
-          placeholder: text("e.g. quiz or qu-i-z (leave blank if no words)"),
-        },
+        element: wordsInput,
       },
       {
         type: "context",

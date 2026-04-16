@@ -27,6 +27,7 @@ const GAME_FLOW_CALLBACKS = new Set([
 
 const SCORE_ACTIONS = new Set([
   "qbim_open_hand_modal",
+  "qbim_retry_hand",
   "qbim_finalize_game",
   "qbim_admin_edit_picker",
 ]);

@@ -5,7 +5,29 @@ import * as blocks from "../lib/blocks.mjs";
 import { getScoreOptions, getHandRange, formatWordsWithPoints } from "../lib/cards.mjs";
 import { renderHome, resolveNames, aggregateScores, findCurrentRound, ADMIN_USER } from "../lib/home.mjs";
 import { createQuicklerTimer, deleteQuicklerTimer } from "../lib/quickler.mjs";
-import { validateWords } from "../lib/dictionary.mjs";
+
+// Lambda client for async-invoking the score worker. Lazy-loaded.
+let _lambda;
+async function getLambda() {
+  if (_lambda) return _lambda;
+  const { LambdaClient } = await import("@aws-sdk/client-lambda");
+  _lambda = new LambdaClient({});
+  return _lambda;
+}
+async function invokeScoreWorker(payload) {
+  const functionName = process.env.SCORE_WORKER_FUNCTION_NAME;
+  if (!functionName) {
+    console.warn("SCORE_WORKER_FUNCTION_NAME not set; cannot invoke worker");
+    return;
+  }
+  const { InvokeCommand } = await import("@aws-sdk/client-lambda");
+  const client = await getLambda();
+  await client.send(new InvokeCommand({
+    FunctionName: functionName,
+    InvocationType: "Event", // fire-and-forget
+    Payload: Buffer.from(JSON.stringify(payload)),
+  }));
+}
 
 export async function handler(event) {
   const { raw, parsed } = parseSlackBody(event.body, event.isBase64Encoded);
@@ -48,6 +70,19 @@ async function handleAction(payload) {
       await slack().views.open({
         trigger_id: payload.trigger_id,
         view: blocks.handScoreModal(gameId, hand, buttonPressedAt),
+      });
+      break;
+    }
+
+    case "qbim_retry_hand": {
+      let retryMeta;
+      try { retryMeta = JSON.parse(action.value); } catch { return; }
+      const { game_id, hand, words } = retryMeta;
+      if (!game_id || hand < 3 || hand > 10) return;
+      const buttonPressedAt = action.action_ts || null;
+      await slack().views.open({
+        trigger_id: payload.trigger_id,
+        view: blocks.handScoreModal(game_id, hand, buttonPressedAt, words || ""),
       });
       break;
     }
@@ -259,15 +294,7 @@ async function submitScore(payload) {
     return validationError(`Too many cards for Hand ${hand}${mulligans > 0 ? ` with ${mulligans} mulligan${mulligans > 1 ? "s" : ""}` : ""} (max ${maxCards} cards).`);
   }
 
-  // Dictionary validation — block invalid words
-  const dictCheck = await validateWords(wordsInput);
-  if (dictCheck.invalid.length) {
-    const bad = dictCheck.invalid.map((w) => `*${w.word}*`).join(", ");
-    const s = dictCheck.invalid.length > 1 ? "s" : "";
-    return validationError(`Not in the dictionary: ${bad}. Try other word${s}.`);
-  }
-
-  // Multiple score options — let player choose
+  // Multiple score options — let player choose (dictionary validation happens on confirm)
   if (options.length > 1) {
     return {
       statusCode: 200,
@@ -279,9 +306,12 @@ async function submitScore(payload) {
     };
   }
 
-  // Single option — save directly
-  const chosen = options[0];
-  return await saveScore(userId, game_id, hand, wordsInput, chosen, button_pressed_at);
+  // Single option — hand off to async worker (validates + saves in background)
+  await invokeScoreWorker({
+    userId, game_id, hand,
+    wordsInput, chosen: options[0], buttonPressedAt: button_pressed_at,
+  });
+  return respond(200, { response_action: "clear" });
 }
 
 /**
@@ -297,13 +327,17 @@ async function confirmScore(payload) {
   let chosen;
   try { chosen = JSON.parse(selectedValue); } catch { return respond(200); }
 
-  return await saveScore(userId, game_id, hand, words, chosen, button_pressed_at);
+  await invokeScoreWorker({
+    userId, game_id, hand,
+    wordsInput: words, chosen, buttonPressedAt: button_pressed_at,
+  });
+  return respond(200, { response_action: "clear" });
 }
 
 /**
  * Save the score record and handle game state transitions.
  */
-async function saveScore(userId, game_id, hand, wordsInput, chosen, buttonPressedAt = null) {
+export async function saveScore(userId, game_id, hand, wordsInput, chosen, buttonPressedAt = null) {
   const rawScore = chosen.score;
   const breakdown = chosen.breakdown;
 
