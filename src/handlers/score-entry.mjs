@@ -5,6 +5,7 @@ import * as blocks from "../lib/blocks.mjs";
 import { getScoreOptions, getHandRange, formatWordsWithPoints } from "../lib/cards.mjs";
 import { renderHome, resolveNames, aggregateScores, findCurrentRound, ADMIN_USER } from "../lib/home.mjs";
 import { createQuicklerTimer, deleteQuicklerTimer } from "../lib/quickler.mjs";
+import { validateWords } from "../lib/dictionary.mjs";
 
 // Lambda client for async-invoking the score worker. Lazy-loaded.
 let _lambda;
@@ -294,7 +295,15 @@ async function submitScore(payload) {
     return validationError(`Too many cards for Hand ${hand}${mulligans > 0 ? ` with ${mulligans} mulligan${mulligans > 1 ? "s" : ""}` : ""} (max ${maxCards} cards).`);
   }
 
-  // Multiple score options — let player choose (dictionary validation happens on confirm)
+  // Dictionary validation (sync — shows errors inline in the modal)
+  const dictCheck = await validateWords(wordsInput);
+  if (dictCheck.invalid.length) {
+    const bad = dictCheck.invalid.map((w) => `*${w.word}*`).join(", ");
+    const s = dictCheck.invalid.length > 1 ? "s" : "";
+    return validationError(`Not in the dictionary: ${bad}. Try other word${s}.`);
+  }
+
+  // Multiple score options — let player choose
   if (options.length > 1) {
     return {
       statusCode: 200,
@@ -306,10 +315,11 @@ async function submitScore(payload) {
     };
   }
 
-  // Single option — hand off to async worker (validates + saves in background)
+  // Valid single option — hand off save to async worker, close modal immediately
   await invokeScoreWorker({
     userId, game_id, hand,
     wordsInput, chosen: options[0], buttonPressedAt: button_pressed_at,
+    validated: true,
   });
   return respond(200, { response_action: "clear" });
 }
@@ -327,9 +337,18 @@ async function confirmScore(payload) {
   let chosen;
   try { chosen = JSON.parse(selectedValue); } catch { return respond(200); }
 
+  // Dictionary validation (sync — inline modal errors)
+  const dictCheck = await validateWords(words);
+  if (dictCheck.invalid.length) {
+    const bad = dictCheck.invalid.map((w) => `*${w.word}*`).join(", ");
+    return validationError(`Not in the dictionary: ${bad}. Try other words.`);
+  }
+
+  // Valid — save async, close modal immediately
   await invokeScoreWorker({
     userId, game_id, hand,
     wordsInput: words, chosen, buttonPressedAt: button_pressed_at,
+    validated: true,
   });
   return respond(200, { response_action: "clear" });
 }

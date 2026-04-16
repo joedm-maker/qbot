@@ -24,11 +24,11 @@ export async function handler(event) {
     const {
       mode = "regular",
       userId, game_id, hand, wordsInput, chosen,
-      buttonPressedAt, dealtCards,
+      buttonPressedAt, dealtCards, validated,
     } = event;
 
-    // Dictionary validation
-    const { invalid } = await validateWords(wordsInput || "");
+    // Dictionary validation — skip if already validated by the caller
+    const { invalid } = validated ? { invalid: [] } : await validateWords(wordsInput || "");
     if (invalid.length) {
       const bad = invalid.map((w) => `*${w.word}*`).join(", ");
       await dmUser(userId, {
