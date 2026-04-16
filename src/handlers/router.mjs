@@ -55,6 +55,12 @@ const LEADERBOARD_ACTIONS = new Set([
 ]);
 
 export async function handler(event) {
+  // Lambda warmer — scheduled ping to prevent cold starts
+  if (event.source === "aws.events" || event.detail?.warmup) {
+    console.log("Warmer ping — staying hot");
+    return { statusCode: 200, body: "warm" };
+  }
+
   // Stats API — GET requests, no Slack signature needed
   if (event.httpMethod === "GET" && event.resource?.startsWith("/stats/")) {
     // Normalize path to strip stage prefix
