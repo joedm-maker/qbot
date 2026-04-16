@@ -160,8 +160,20 @@ export async function lookupWord(raw) {
  * (spaces/commas/+ as separators, hyphens stripped).
  * Returns { valid: [...], invalid: [...] } with each entry { word, definition, url, source }.
  */
+/** House rule: a single-word submission made of one repeated vowel is always accepted. */
+const SAME_VOWEL_RE = /^([aeiou])\1*$/;
+
 export async function validateWords(wordsInput) {
   const tokens = String(wordsInput || "").replace(/[\s,+]+/g, " ").trim().split(" ").filter(Boolean);
+
+  // House rule: one word, all the same vowel → auto-accept
+  if (tokens.length === 1) {
+    const only = cleanWord(tokens[0]);
+    if (only && SAME_VOWEL_RE.test(only)) {
+      return { valid: [{ word: only, definition: null, url: null, source: "house" }], invalid: [] };
+    }
+  }
+
   const seen = new Set();
   const uniqueWords = [];
   for (const token of tokens) {
