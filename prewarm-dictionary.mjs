@@ -5,11 +5,21 @@
 // Usage: MW_API_KEY=... AWS_PROFILE=qbim node --import ./test-env.mjs prewarm-dictionary.mjs
 
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, ScanCommand, PutCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, ScanCommand, PutCommand, GetCommand, DeleteCommand } from "@aws-sdk/lib-dynamodb";
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: "us-east-1" }));
 const MW_KEY = process.env.MW_API_KEY;
 const MW_BASE = "https://www.dictionaryapi.com/api/v3/references/collegiate/json";
+const PURGE = process.argv.includes("--purge");
+
+function entryRejected(entry) {
+  const fl = (entry?.fl || "").toLowerCase();
+  if (fl.includes("prefix") || fl.includes("suffix") || fl.includes("combining form")) return true;
+  if (fl === "abbreviation" || fl === "contraction") return true;
+  const lbs = (entry?.lbs || []).map((l) => String(l).toLowerCase());
+  if (lbs.includes("slang") || lbs.includes("informal")) return true;
+  return false;
+}
 
 async function scanAll(table) {
   const items = [];
@@ -29,6 +39,7 @@ async function callMW(word) {
   const data = await r.json();
   if (!Array.isArray(data) || !data.length || typeof data[0] === "string") return { valid: false };
   for (const entry of data) {
+    if (entryRejected(entry)) continue;
     const metaId = (entry.meta?.id || "").split(":")[0].toLowerCase();
     const stems = (entry.meta?.stems || []).map((s) => s.toLowerCase());
     if (metaId === word || stems.includes(word)) {
@@ -52,7 +63,23 @@ async function cachedAlready(word) {
   return !!Item;
 }
 
+async function purgeCache() {
+  console.log("Purging qbim-dictionary cache...");
+  let purged = 0;
+  let lastKey;
+  do {
+    const r = await ddb.send(new ScanCommand({ TableName: "qbim-dictionary", ExclusiveStartKey: lastKey, ProjectionExpression: "#w", ExpressionAttributeNames: { "#w": "word" } }));
+    for (const item of r.Items || []) {
+      await ddb.send(new DeleteCommand({ TableName: "qbim-dictionary", Key: { word: item.word } }));
+      purged++;
+    }
+    lastKey = r.LastEvaluatedKey;
+  } while (lastKey);
+  console.log(`Purged ${purged} entries\n`);
+}
+
 async function main() {
+  if (PURGE) await purgeCache();
   console.log("Scanning scores for all unique words...");
   const items = await scanAll("qbim-scores");
   const allWords = new Set();

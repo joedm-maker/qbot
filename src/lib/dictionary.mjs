@@ -22,6 +22,19 @@ export function cleanWord(raw) {
   return String(raw || "").toLowerCase().replace(/[^a-z]/g, "");
 }
 
+/**
+ * Should this MW entry be rejected per house rules?
+ * We reject prefixes, suffixes, combining forms, slang, and informal entries.
+ */
+export function entryRejected(entry) {
+  const fl = (entry?.fl || "").toLowerCase();
+  if (fl.includes("prefix") || fl.includes("suffix") || fl.includes("combining form")) return true;
+  if (fl === "abbreviation" || fl === "contraction") return true;
+  const lbs = (entry?.lbs || []).map((l) => String(l).toLowerCase());
+  if (lbs.includes("slang") || lbs.includes("informal")) return true;
+  return false;
+}
+
 /** Build the public MW reference URL for a word. */
 function buildUrl(word) {
   return `https://www.merriam-webster.com/dictionary/${encodeURIComponent(word)}`;
@@ -53,8 +66,10 @@ async function callMW(word) {
     // If MW returned suggestions (array of strings), the word isn't found
     if (typeof data[0] === "string") return { valid: false };
 
-    // Accept if any entry's stems contains the word OR meta.id (minus ":N") matches
+    // Accept if any NON-REJECTED entry's stems contains the word OR meta.id matches.
+    // Reject: prefixes, suffixes, combining forms, slang, informal (per house rules).
     for (const entry of data) {
+      if (entryRejected(entry)) continue;
       const metaId = (entry.meta?.id || "").split(":")[0].toLowerCase();
       const stems = (entry.meta?.stems || []).map((s) => s.toLowerCase());
       if (metaId === word || stems.includes(word)) {
