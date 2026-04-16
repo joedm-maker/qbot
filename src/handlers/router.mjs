@@ -39,6 +39,7 @@ const SCORE_CALLBACKS = new Set([
 const AUTOQ_ACTIONS = new Set([
   "autoq_start",
   "autoq_open_hand_modal",
+  "autoq_retry_hand",
   "autoq_mulligan",
   "autoq_quit",
 ]);

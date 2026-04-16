@@ -14,7 +14,23 @@ import { QUIDDLER_DECK } from "../lib/autoq-deck.mjs";
 import * as autoqDb from "../lib/autoq-db.mjs";
 import * as autoqBlocks from "../lib/autoq-blocks.mjs";
 import { renderHome } from "../lib/home.mjs";
-import { validateWords } from "../lib/dictionary.mjs";
+
+// Lazy Lambda client for invoking the score worker async
+let _lambda;
+async function invokeScoreWorker(payload) {
+  const functionName = process.env.SCORE_WORKER_FUNCTION_NAME;
+  if (!functionName) {
+    console.warn("SCORE_WORKER_FUNCTION_NAME not set; cannot invoke worker");
+    return;
+  }
+  const { LambdaClient, InvokeCommand } = await import("@aws-sdk/client-lambda");
+  if (!_lambda) _lambda = new LambdaClient({});
+  await _lambda.send(new InvokeCommand({
+    FunctionName: functionName,
+    InvocationType: "Event",
+    Payload: Buffer.from(JSON.stringify(payload)),
+  }));
+}
 
 export async function handler(event) {
   const { raw, parsed } = parseSlackBody(event.body, event.isBase64Encoded);
@@ -66,6 +82,19 @@ async function handleAction(payload) {
       await slack().views.open({
         trigger_id: payload.trigger_id,
         view: autoqBlocks.autoqHandScoreModal(gameId, hand, dealtCards, buttonPressedAt),
+      });
+      break;
+    }
+
+    case "autoq_retry_hand": {
+      let retryMeta;
+      try { retryMeta = JSON.parse(action.value); } catch { return; }
+      const { game_id, hand, words, dealt_cards } = retryMeta;
+      if (!game_id || !dealt_cards) return;
+      const buttonPressedAt = action.action_ts || null;
+      await slack().views.open({
+        trigger_id: payload.trigger_id,
+        view: autoqBlocks.autoqHandScoreModal(game_id, hand, dealt_cards, buttonPressedAt, words || ""),
       });
       break;
     }
@@ -258,21 +287,17 @@ async function submitScore(payload) {
     return validationError("words_block", "Those cards aren't in your dealt hand.");
   }
 
-  // Dictionary validation — block invalid words
-  const dictCheck = await validateWords(wordsInput);
-  if (dictCheck.invalid.length) {
-    const bad = dictCheck.invalid.map((w) => `*${w.word}*`).join(", ");
-    const s = dictCheck.invalid.length > 1 ? "s" : "";
-    return validationError("words_block", `Not in the dictionary: ${bad}. Try other word${s}.`);
-  }
-
   if (options.length === 1) {
-    await saveAutoQScore(userId, game_id, hand, wordsInput, options[0], dealt_cards);
-    await renderHome(userId);
+    // Fire-and-forget async: validate + save in the worker, respond immediately
+    await invokeScoreWorker({
+      mode: "autoq",
+      userId, game_id, hand, wordsInput,
+      chosen: options[0], dealtCards: dealt_cards,
+    });
     return respond(200, { response_action: "clear" });
   }
 
-  // Multiple options — show choice modal
+  // Multiple options — show choice modal (dictionary check happens on confirm)
   return respond(200, {
     response_action: "update",
     view: autoqBlocks.autoqScoreChoiceModal(game_id, hand, wordsInput, options, dealt_cards, meta.button_pressed_at),
@@ -289,12 +314,15 @@ async function confirmScore(payload) {
     payload.view.state.values.score_choice_block.score_choice.selected_option.value
   );
 
-  await saveAutoQScore(userId, game_id, hand, words, chosen, dealt_cards);
-  await renderHome(userId);
+  await invokeScoreWorker({
+    mode: "autoq",
+    userId, game_id, hand, wordsInput: words,
+    chosen, dealtCards: dealt_cards,
+  });
   return respond(200, { response_action: "clear" });
 }
 
-async function saveAutoQScore(userId, gameId, hand, wordsInput, chosen, dealtCards) {
+export async function saveAutoQScore(userId, gameId, hand, wordsInput, chosen, dealtCards) {
   const game = await autoqDb.getAutoQGame(gameId);
   if (!game) return;
 

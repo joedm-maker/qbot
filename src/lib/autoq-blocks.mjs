@@ -84,8 +84,14 @@ export function autoqStartModal() {
 /**
  * Score entry modal showing dealt cards.
  */
-export function autoqHandScoreModal(gameId, hand, dealtCards, buttonPressedAt = null) {
+export function autoqHandScoreModal(gameId, hand, dealtCards, buttonPressedAt = null, prefillWords = "") {
   const cardsDisplay = formatDealtCards(dealtCards);
+  const wordsInput = {
+    type: "plain_text_input",
+    action_id: "words",
+    placeholder: text("e.g. quiz or qu-i-z"),
+  };
+  if (prefillWords) wordsInput.initial_value = prefillWords;
 
   return {
     type: "modal",
@@ -100,11 +106,7 @@ export function autoqHandScoreModal(gameId, hand, dealtCards, buttonPressedAt = 
         block_id: "words_block",
         label: text("Words Played (leave blank if no words)"),
         optional: true,
-        element: {
-          type: "plain_text_input",
-          action_id: "words",
-          placeholder: text("e.g. quiz or qu-i-z"),
-        },
+        element: wordsInput,
       },
       {
         type: "context",
