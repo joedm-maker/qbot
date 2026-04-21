@@ -31,7 +31,7 @@ export function entryRejected(entry) {
   if (fl.includes("prefix") || fl.includes("suffix") || fl.includes("combining form")) return true;
   if (fl === "abbreviation" || fl === "contraction") return true;
   const lbs = (entry?.lbs || []).map((l) => String(l).toLowerCase());
-  if (lbs.includes("slang") || lbs.includes("informal")) return true;
+  if (lbs.includes("slang") || lbs.includes("informal") || lbs.includes("substandard")) return true;
   return false;
 }
 

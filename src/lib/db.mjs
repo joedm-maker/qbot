@@ -151,6 +151,51 @@ export async function addMulligan(gameId, playerId, hand) {
   );
 }
 
+// Atomic, debounced mulligan. Rejects if the cap is already reached OR the
+// previous click for this player+hand was within `debounceMs`. Returns the
+// outcome so the handler can stay simple.
+export async function tryAddMulligan(gameId, playerId, hand, debounceMs = 2000) {
+  const key = `${playerId}#${hand}`;
+  const now = Date.now();
+  const cutoff = now - debounceMs;
+
+  // Ensure both maps exist. if_not_exists makes this idempotent.
+  await ddb.send(
+    new UpdateCommand({
+      TableName: GAMES_TABLE,
+      Key: { game_id: gameId },
+      UpdateExpression:
+        "SET mulligans = if_not_exists(mulligans, :empty), mulligan_ts = if_not_exists(mulligan_ts, :empty)",
+      ExpressionAttributeValues: { ":empty": {} },
+    })
+  );
+
+  try {
+    await ddb.send(
+      new UpdateCommand({
+        TableName: GAMES_TABLE,
+        Key: { game_id: gameId },
+        UpdateExpression:
+          "SET mulligans.#k = if_not_exists(mulligans.#k, :zero) + :one, mulligan_ts.#k = :now",
+        ConditionExpression:
+          "(attribute_not_exists(mulligans.#k) OR mulligans.#k < :cap) AND (attribute_not_exists(mulligan_ts.#k) OR mulligan_ts.#k < :cutoff)",
+        ExpressionAttributeNames: { "#k": key },
+        ExpressionAttributeValues: {
+          ":zero": 0,
+          ":one": 1,
+          ":cap": hand - 1,
+          ":cutoff": cutoff,
+          ":now": now,
+        },
+      })
+    );
+    return true;
+  } catch (err) {
+    if (err.name === "ConditionalCheckFailedException") return false;
+    throw err;
+  }
+}
+
 export async function setMulliganCount(gameId, playerId, hand, count) {
   const key = `${playerId}#${hand}`;
   await ddb.send(
@@ -351,6 +396,55 @@ export async function incrementPlayerStats(slackId, { gamesPlayed = 0, incomplet
       ExpressionAttributeValues: values,
     })
   );
+}
+
+// ── Achievements ──────────────────────────────────────
+
+/**
+ * Achievement catalog — single source of truth for id, display name, emoji, and description.
+ */
+export const ACHIEVEMENTS = {
+  "strategic-retreat": { emoji: ":shield:", name: "Strategic Retreat", description: "Took a mulligan and still won the round" },
+};
+
+/**
+ * Award an achievement to a player. No-ops if already earned.
+ * Returns true if newly awarded, false if already had it.
+ */
+export async function addAchievement(slackId, achievementId, meta = {}) {
+  try {
+    await ddb.send(
+      new UpdateCommand({
+        TableName: PLAYERS_TABLE,
+        Key: { slack_id: slackId },
+        UpdateExpression: "SET achievements.#aid = :meta",
+        ConditionExpression: "attribute_not_exists(achievements.#aid)",
+        ExpressionAttributeNames: { "#aid": achievementId },
+        ExpressionAttributeValues: {
+          ":meta": { earned_at: new Date().toISOString(), ...meta },
+        },
+      })
+    );
+    return true;
+  } catch (err) {
+    if (err.name === "ConditionalCheckFailedException") return false;
+    // If achievements map doesn't exist yet, create it with this entry
+    if (err.name === "ValidationException") {
+      await ddb.send(
+        new UpdateCommand({
+          TableName: PLAYERS_TABLE,
+          Key: { slack_id: slackId },
+          UpdateExpression: "SET achievements = :map",
+          ConditionExpression: "attribute_not_exists(achievements)",
+          ExpressionAttributeValues: {
+            ":map": { [achievementId]: { earned_at: new Date().toISOString(), ...meta } },
+          },
+        })
+      );
+      return true;
+    }
+    throw err;
+  }
 }
 
 // ── Regular Players Query ───────────────────────────────

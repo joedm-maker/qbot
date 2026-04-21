@@ -96,12 +96,9 @@ async function handleAction(payload) {
     case "qbim_mulligan": {
       const [gameId, handStr] = action.value.split("|");
       const hand = Number(handStr);
-      // Ensure mulligan doesn't reduce below 1 card
-      const current = await db.getMulliganCount(gameId, userId, hand);
-      if (current < hand - 1) {
-        await db.initMulligansMap(gameId);
-        await db.addMulligan(gameId, userId, hand);
-      }
+      // Atomic debounce + cap check. Ignores duplicate clicks (Slack retries,
+      // impatient double-taps) within the debounce window.
+      await db.tryAddMulligan(gameId, userId, hand);
       await renderHome(userId);
       break;
     }
