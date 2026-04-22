@@ -178,12 +178,13 @@ function scoreCards(cards) {
 export function getScoreOptions(input, handSize) {
   // Normalize whitespace and word separators (spaces, commas, + signs)
   const cleaned = input.replace(/[\s,+]+/g, " ").trim();
-  if (!cleaned) return { options: [], invalid: [] };
+  if (!cleaned) return { options: [], invalid: [], tooShort: [] };
 
   const wordTokens = cleaned.split(" ").filter((t) => t.length > 0);
-  if (wordTokens.length === 0) return { options: [], invalid: [] };
+  if (wordTokens.length === 0) return { options: [], invalid: [], tooShort: [] };
 
   const allInvalid = [];
+  const tooShort = [];
 
   // Get breakdowns per word
   const perWord = wordTokens.map((token) => {
@@ -192,6 +193,7 @@ export function getScoreOptions(input, handSize) {
     if (upper.includes("-")) {
       const { cards, invalid } = parseExplicit(upper);
       allInvalid.push(...invalid);
+      if (!invalid.length && cards.length < 2) tooShort.push(token);
       return [{ cards, raw: token }];
     }
     const breakdowns = allBreakdowns(upper);
@@ -200,11 +202,20 @@ export function getScoreOptions(input, handSize) {
       allInvalid.push(token);
       return [{ cards: [], raw: token }];
     }
-    return breakdowns.map((cards) => ({ cards, raw: token }));
+    // 2-card minimum per word — drop any 1-card interpretations
+    const filtered = breakdowns.filter((bd) => bd.length >= 2);
+    if (filtered.length === 0) {
+      tooShort.push(token);
+      return [{ cards: [], raw: token }];
+    }
+    return filtered.map((cards) => ({ cards, raw: token }));
   });
 
   if (allInvalid.length) {
-    return { options: [], invalid: allInvalid };
+    return { options: [], invalid: allInvalid, tooShort };
+  }
+  if (tooShort.length) {
+    return { options: [], invalid: [], tooShort };
   }
 
   // Cartesian product of all word breakdowns
@@ -244,7 +255,7 @@ export function getScoreOptions(input, handSize) {
     .map(({ score, cards, breakdown }) => ({ score, cards, breakdown }))
     .sort((a, b) => b.score - a.score);
 
-  return { options, invalid: [] };
+  return { options, invalid: [], tooShort: [] };
 }
 
 /**

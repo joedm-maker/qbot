@@ -166,8 +166,9 @@ export async function lookupWord(raw) {
  * (spaces/commas/+ as separators, hyphens stripped).
  * Returns { valid: [...], invalid: [...] } with each entry { word, definition, url, source }.
  */
-/** House rule: a single-word submission made of one repeated vowel is always accepted. */
-const SAME_VOWEL_RE = /^([aeiou])\1*$/;
+/** House rule: a single-word submission made of one repeated vowel (2+ chars)
+ * is always accepted. 2+ only — single-letter "a"/"i" violate the 2-card rule. */
+const SAME_VOWEL_RE = /^([aeiou])\1+$/;
 
 export async function validateWords(wordsInput) {
   const tokens = String(wordsInput || "").replace(/[\s,+]+/g, " ").trim().split(" ").filter(Boolean);

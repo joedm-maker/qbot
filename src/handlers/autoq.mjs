@@ -296,10 +296,14 @@ async function submitScore(payload) {
   const maxCards = Math.max(2, hand - mulligans);
 
   // Filter options against dealt cards
-  const { options, invalid } = filterOptionsAgainstDealt(wordsInput, maxCards, dealt_cards);
+  const { options, invalid, tooShort } = filterOptionsAgainstDealt(wordsInput, maxCards, dealt_cards);
 
   if (invalid.length) {
     return validationError("words_block", `Invalid cards: ${invalid.join(", ")}`);
+  }
+
+  if (tooShort?.length) {
+    return validationError("words_block", `Every word must use at least 2 cards: ${tooShort.join(", ")}`);
   }
 
   if (options.length === 0) {

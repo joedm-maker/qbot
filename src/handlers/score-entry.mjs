@@ -302,10 +302,14 @@ async function submitScore(payload) {
   const maxCards = hand - mulligans;
 
   // Get all possible score options with adjusted card limit
-  const { options, invalid } = getScoreOptions(wordsInput, maxCards);
+  const { options, invalid, tooShort } = getScoreOptions(wordsInput, maxCards);
 
   if (invalid.length) {
     return validationError(`Invalid cards: ${invalid.join(", ")}. Valid cards: A-Z, QU, IN, ER, TH, CL`);
+  }
+
+  if (tooShort?.length) {
+    return validationError(`Every word must use at least 2 cards: ${tooShort.join(", ")}`);
   }
 
   if (options.length === 0) {
@@ -751,9 +755,12 @@ async function adminSaveEdit(payload) {
 
   // Calculate score from words (accounting for mulligans)
   const maxCards = hand - newMulligans;
-  const { options, invalid } = getScoreOptions(wordsInput, maxCards);
+  const { options, invalid, tooShort } = getScoreOptions(wordsInput, maxCards);
   if (invalid.length) {
     return validationError(`Invalid cards: ${invalid.join(", ")}`);
+  }
+  if (tooShort?.length) {
+    return validationError(`Every word must use at least 2 cards: ${tooShort.join(", ")}`);
   }
   if (options.length === 0) {
     return validationError(`No valid card combinations fit within Hand ${hand}${newMulligans > 0 ? ` with ${newMulligans} mulligan${newMulligans > 1 ? "s" : ""}` : ""} (max ${maxCards} cards).`);

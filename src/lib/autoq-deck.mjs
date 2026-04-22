@@ -101,6 +101,7 @@ export function filterOptionsAgainstDealt(input, handSize, dealtCards) {
   if (wordTokens.length === 0) return { options: [], invalid: [] };
 
   const allInvalid = [];
+  const tooShort = [];
 
   // Get ALL breakdowns per word (no grouping)
   const perWord = wordTokens.map((token) => {
@@ -109,6 +110,7 @@ export function filterOptionsAgainstDealt(input, handSize, dealtCards) {
     if (upper.includes("-")) {
       const { cards, invalid } = parseExplicit(upper);
       allInvalid.push(...invalid);
+      if (!invalid.length && cards.length < 2) tooShort.push(token);
       return [{ cards, raw: token }];
     }
     const breakdowns = allBreakdowns(upper);
@@ -116,10 +118,16 @@ export function filterOptionsAgainstDealt(input, handSize, dealtCards) {
       allInvalid.push(token);
       return [{ cards: [], raw: token }];
     }
-    return breakdowns.map((cards) => ({ cards, raw: token }));
+    const filtered = breakdowns.filter((bd) => bd.length >= 2);
+    if (filtered.length === 0) {
+      tooShort.push(token);
+      return [{ cards: [], raw: token }];
+    }
+    return filtered.map((cards) => ({ cards, raw: token }));
   });
 
-  if (allInvalid.length) return { options: [], invalid: allInvalid };
+  if (allInvalid.length) return { options: [], invalid: allInvalid, tooShort };
+  if (tooShort.length) return { options: [], invalid: [], tooShort };
 
   // Cartesian product, then filter by hand size AND dealt cards
   const combos = cartesian(perWord);
@@ -152,7 +160,7 @@ export function filterOptionsAgainstDealt(input, handSize, dealtCards) {
     .map(({ score, cards, breakdown }) => ({ score, cards, breakdown }))
     .sort((a, b) => b.score - a.score);
 
-  return { options, invalid: [] };
+  return { options, invalid: [], tooShort: [] };
 }
 
 /**
