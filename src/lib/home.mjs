@@ -336,23 +336,25 @@ async function renderAdminHome(userId) {
             type: "section",
             text: { type: "mrkdwn", text: `*Your Turn:* Enter score for *Hand ${round.hand}*${mulliganNote}` },
           });
-          viewBlocks.push({
-            type: "actions",
-            elements: [
-              {
-                type: "button",
-                text: { type: "plain_text", text: `Enter Hand ${round.hand} Score`, emoji: true },
-                action_id: "qbim_open_hand_modal",
-                value: `${game.game_id}|${round.hand}`,
-              },
-              {
-                type: "button",
-                text: { type: "plain_text", text: "Mulligan", emoji: true },
-                action_id: "qbim_mulligan",
-                value: `${game.game_id}|${round.hand}`,
-              },
-            ],
-          });
+          const elements = [
+            {
+              type: "button",
+              text: { type: "plain_text", text: `Enter Hand ${round.hand} Score`, emoji: true },
+              action_id: "qbim_open_hand_modal",
+              value: `${game.game_id}|${round.hand}`,
+            },
+          ];
+          // Hide Mulligan when a further mulligan would leave fewer than 2 cards
+          // (you can't form a word with 1 card under the 2-card minimum rule).
+          if ((round.maxCards || 0) > 2) {
+            elements.push({
+              type: "button",
+              text: { type: "plain_text", text: "Mulligan", emoji: true },
+              action_id: "qbim_mulligan",
+              value: `${game.game_id}|${round.hand}`,
+            });
+          }
+          viewBlocks.push({ type: "actions", elements });
         } else {
           const myLine = round.myWords
             ? `You submitted: *${round.myWords}* (${round.myScore} pts)${mulliganNote}`

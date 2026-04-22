@@ -254,8 +254,9 @@ export function autoqHomeActive(game, currentHand, handResults, personalBests) {
       const btns = [
         button(`Enter Hand ${currentHand} Score`, "autoq_open_hand_modal", `${game.game_id}|${currentHand}`),
       ];
-      // Only show Mulligan if there's more than 1 card left
-      if (dealtCards.length > 1) {
+      // Only show Mulligan if we'd still have ≥2 cards after dropping one
+      // (words require at least 2 cards).
+      if (dealtCards.length > 2) {
         btns.push(button("Mulligan", "autoq_mulligan", `${game.game_id}|${currentHand}`));
       }
       btns.push(button("Quit", "autoq_quit", game.game_id));

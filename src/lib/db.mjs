@@ -183,7 +183,7 @@ export async function tryAddMulligan(gameId, playerId, hand, debounceMs = 2000) 
         ExpressionAttributeValues: {
           ":zero": 0,
           ":one": 1,
-          ":cap": hand - 1,
+          ":cap": hand - 2,
           ":cutoff": cutoff,
           ":now": now,
         },

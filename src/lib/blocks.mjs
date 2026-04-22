@@ -82,8 +82,11 @@ export function homeActive(game, playerNames, round, totals, rawScores, viewerId
       }
       const btns = [
         button(`Enter Hand ${round.hand} Score`, "qbim_open_hand_modal", `${game.game_id}|${round.hand}`),
-        button("Mulligan", "qbim_mulligan", `${game.game_id}|${round.hand}`),
       ];
+      // Mulligan drops 1 card; hide when we'd go below the 2-card word minimum.
+      if ((round.maxCards || 0) > 2) {
+        btns.push(button("Mulligan", "qbim_mulligan", `${game.game_id}|${round.hand}`));
+      }
       blks.push(
         section(`✏️ Enter your score for *Hand ${round.hand}*${mulliganNote}`),
         actions(btns)

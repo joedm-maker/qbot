@@ -108,7 +108,7 @@ async function handleAction(payload) {
       const currentCount = game.mulligans?.[String(hand)] || 0;
       const currentCards = game.dealt_hands?.[String(hand)]?.[0] || [];
       const newSize = currentCards.length - 1;
-      if (newSize < 1) break; // can't mulligan below 1 card
+      if (newSize < 2) break; // can't mulligan below the 2-card word minimum
 
       // Collect cards to exclude: player's current hand + all previous mulligan hands
       const excluded = [...currentCards];
