@@ -426,6 +426,12 @@ export async function saveScore(userId, game_id, hand, wordsInput, chosen, butto
   // Get mulligan count for this hand
   const mulligans = await db.getMulliganCount(game_id, userId, hand);
 
+  // Preserve the original submission time across re-submissions so pace
+  // tracking reflects when the player first thought they were done.
+  const priorRecord = existingScores.find((s) => s.player_slack_id === userId);
+  const nowIso = new Date().toISOString();
+  const firstSubmittedAt = priorRecord?.first_submitted_at || priorRecord?.submitted_at || nowIso;
+
   // Write score record (overwrites if exists)
   await db.putScore({
     game_id,
@@ -441,7 +447,8 @@ export async function saveScore(userId, game_id, hand, wordsInput, chosen, butto
     stars: 0,
     star_longest_word: false,
     star_most_words: false,
-    submitted_at: new Date().toISOString(),
+    first_submitted_at: firstSubmittedAt,
+    submitted_at: nowIso,
   });
 
   // Increment play count for each unique word (used by Phase 4 definition-DM logic).
@@ -762,6 +769,12 @@ async function adminSaveEdit(payload) {
     if (letters > longestWordLetters) longestWordLetters = letters;
   }
 
+  // Preserve the player's original submission time across admin edits.
+  const priorHandScores = await db.getScoresForGameHand(game_id, hand);
+  const priorRecord = priorHandScores.find((s) => s.player_slack_id === player_id);
+  const nowIso = new Date().toISOString();
+  const firstSubmittedAt = priorRecord?.first_submitted_at || priorRecord?.submitted_at || nowIso;
+
   // Overwrite the score record
   await db.putScore({
     game_id,
@@ -776,7 +789,8 @@ async function adminSaveEdit(payload) {
     stars: 0,
     star_longest_word: false,
     star_most_words: false,
-    submitted_at: new Date().toISOString(),
+    first_submitted_at: firstSubmittedAt,
+    submitted_at: nowIso,
   });
 
   // Recalculate stars for this hand
