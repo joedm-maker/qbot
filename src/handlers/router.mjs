@@ -30,6 +30,7 @@ const SCORE_ACTIONS = new Set([
   "qbim_retry_hand",
   "qbim_finalize_game",
   "qbim_admin_edit_picker",
+  "qbim_check_words",
 ]);
 const SCORE_CALLBACKS = new Set([
   "qbim_submit_score",

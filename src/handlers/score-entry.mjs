@@ -231,6 +231,11 @@ async function handleAction(payload) {
       break;
     }
 
+    case "qbim_check_words": {
+      await handleCheckWords(payload, action);
+      break;
+    }
+
     case "qbim_vote_yes":
     case "qbim_vote_no": {
       await handleVoteResponse(payload, action);
@@ -1170,6 +1175,27 @@ async function handleVoteWord(payload, action) {
     });
   } catch (err) {
     console.warn("Failed to update modal:", err.message);
+  }
+}
+
+async function handleCheckWords(payload, action) {
+  let ctx;
+  try { ctx = JSON.parse(action.value); } catch { return; }
+  const { game_id, hand, button_pressed_at, invalid_words, chosen } = ctx;
+
+  const values = payload.view.state.values;
+  const wordsInput = values.words_block?.words?.value || "";
+  const testInput = values.test_words_block?.test_words?.value || "";
+
+  const testResult = testInput.trim() ? await validateWords(testInput) : { valid: [], invalid: [] };
+
+  try {
+    await slack().views.update({
+      view_id: payload.view.id,
+      view: blocks.dictRejectModal(game_id, hand, button_pressed_at, wordsInput, invalid_words, chosen, testInput, testResult),
+    });
+  } catch (err) {
+    console.warn("Failed to update modal (check words):", err.message);
   }
 }
 

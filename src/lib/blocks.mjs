@@ -319,54 +319,101 @@ export function handScoreModal(gameId, hand, buttonPressedAt = null, prefillWord
 
 /**
  * Dictionary rejection modal — word(s) not found, offers Vote or edit+resubmit.
+ * Also includes a no-stakes "test words" box so players can probe the dictionary
+ * without consuming their real submission.
+ *
+ * Vote button is placed at the very bottom (with danger style) to keep it out of
+ * accidental-tap range next to the primary Resubmit button.
  */
-export function dictRejectModal(gameId, hand, buttonPressedAt, wordsInput, invalidWords, chosen) {
+export function dictRejectModal(gameId, hand, buttonPressedAt, wordsInput, invalidWords, chosen, testInput = "", testResult = null) {
   const wordsField = {
     type: "plain_text_input",
     action_id: "words",
     placeholder: text("e.g. quiz or qu-i-z (leave blank if no words)"),
-    initial_value: wordsInput,
   };
+  if (wordsInput) wordsField.initial_value = wordsInput;
+
+  const testField = {
+    type: "plain_text_input",
+    action_id: "test_words",
+    placeholder: text("e.g. thermodynamic"),
+  };
+  if (testInput) testField.initial_value = testInput;
+
   const bad = invalidWords.map((w) => `*${w}*`).join(", ");
-  const voteCtx = JSON.stringify({
+  const ctxJson = JSON.stringify({
     game_id: gameId, hand, words: wordsInput,
     invalid_words: invalidWords, button_pressed_at: buttonPressedAt, chosen,
   });
+
+  const modalBlocks = [
+    {
+      type: "section",
+      text: { type: "mrkdwn", text: `⚠️ Not in the dictionary: ${bad}` },
+    },
+    {
+      type: "input",
+      block_id: "words_block",
+      label: text("Words Played"),
+      optional: true,
+      element: wordsField,
+    },
+    {
+      type: "context",
+      elements: [{ type: "mrkdwn", text: "Edit your words and tap *Resubmit*." }],
+    },
+    { type: "divider" },
+    {
+      type: "section",
+      text: { type: "mrkdwn", text: "*Test words* — try any words without using your submission." },
+    },
+    {
+      type: "input",
+      block_id: "test_words_block",
+      label: text("Words to check"),
+      optional: true,
+      element: testField,
+    },
+    {
+      type: "actions",
+      elements: [{
+        type: "button",
+        action_id: "qbim_check_words",
+        text: text("Check"),
+        value: ctxJson,
+      }],
+    },
+  ];
+
+  if (testResult) {
+    const okLine = testResult.valid.length ? `✅ ${testResult.valid.map((v) => v.word).join(", ")}` : "";
+    const badLine = testResult.invalid.length ? `❌ ${testResult.invalid.map((v) => v.word).join(", ")}` : "";
+    const line = [okLine, badLine].filter(Boolean).join("    ") || "_(nothing to check)_";
+    modalBlocks.push({
+      type: "context",
+      elements: [{ type: "mrkdwn", text: line }],
+    });
+  }
+
+  modalBlocks.push({ type: "divider" });
+  modalBlocks.push({
+    type: "actions",
+    elements: [{
+      type: "button",
+      action_id: "qbim_vote_word",
+      text: text("🗳️ Vote to accept"),
+      value: ctxJson,
+      style: "danger",
+    }],
+  });
+
   return {
     type: "modal",
     callback_id: "qbim_submit_score",
     private_metadata: JSON.stringify({ game_id: gameId, hand, button_pressed_at: buttonPressedAt }),
     title: text(`Hand ${hand}`),
     submit: text("Resubmit"),
-    blocks: [
-      {
-        type: "section",
-        text: { type: "mrkdwn", text: `⚠️ Not in the dictionary: ${bad}` },
-      },
-      {
-        type: "actions",
-        elements: [{
-          type: "button",
-          action_id: "qbim_vote_word",
-          text: text("🗳️ Vote"),
-          value: voteCtx,
-          style: "primary",
-        }],
-      },
-      {
-        type: "input",
-        block_id: "words_block",
-        label: text("Words Played"),
-        optional: true,
-        element: wordsField,
-      },
-      {
-        type: "context",
-        elements: [
-          { type: "mrkdwn", text: "Edit your words and tap *Resubmit*, or tap *Vote* to let other players decide." },
-        ],
-      },
-    ],
+    blocks: modalBlocks,
   };
 }
 
