@@ -1189,11 +1189,15 @@ async function handleCheckWords(payload, action) {
 
   const testResult = testInput.trim() ? await validateWords(testInput) : { valid: [], invalid: [] };
 
+  // If this Check came from the rejection modal, re-render that modal
+  // (preserves the Vote button and warning message). Otherwise we're in
+  // the regular hand-score modal — re-render that one instead.
+  const view = invalid_words
+    ? blocks.dictRejectModal(game_id, hand, button_pressed_at, wordsInput, invalid_words, chosen, testInput, testResult)
+    : blocks.handScoreModal(game_id, hand, button_pressed_at, wordsInput, testInput, testResult);
+
   try {
-    await slack().views.update({
-      view_id: payload.view.id,
-      view: blocks.dictRejectModal(game_id, hand, button_pressed_at, wordsInput, invalid_words, chosen, testInput, testResult),
-    });
+    await slack().views.update({ view_id: payload.view.id, view });
   } catch (err) {
     console.warn("Failed to update modal (check words):", err.message);
   }

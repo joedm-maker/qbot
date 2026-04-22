@@ -286,34 +286,77 @@ export function endGameModal(gameId) {
 /**
  * Hand score entry modal.
  */
-export function handScoreModal(gameId, hand, buttonPressedAt = null, prefillWords = "") {
+export function handScoreModal(gameId, hand, buttonPressedAt = null, prefillWords = "", testInput = "", testResult = null) {
   const wordsInput = {
     type: "plain_text_input",
     action_id: "words",
     placeholder: text("e.g. quiz or qu-i-z (leave blank if no words)"),
   };
   if (prefillWords) wordsInput.initial_value = prefillWords;
+
+  const testField = {
+    type: "plain_text_input",
+    action_id: "test_words",
+    placeholder: text("e.g. thermodynamic"),
+  };
+  if (testInput) testField.initial_value = testInput;
+
+  const ctxJson = JSON.stringify({ game_id: gameId, hand, button_pressed_at: buttonPressedAt });
+
+  const modalBlocks = [
+    {
+      type: "input",
+      block_id: "words_block",
+      label: text("Words Played"),
+      optional: true,
+      element: wordsInput,
+    },
+    {
+      type: "context",
+      elements: [
+        { type: "mrkdwn", text: "Score is calculated automatically from your cards. Use hyphens to show individual cards (e.g. qu-i-z) or just type the word." },
+      ],
+    },
+    { type: "divider" },
+    {
+      type: "section",
+      text: { type: "mrkdwn", text: "*Test words* — check if a word would pass the dictionary without using your submission." },
+    },
+    {
+      type: "input",
+      block_id: "test_words_block",
+      label: text("Words to check"),
+      optional: true,
+      element: testField,
+    },
+    {
+      type: "actions",
+      elements: [{
+        type: "button",
+        action_id: "qbim_check_words",
+        text: text("Check"),
+        value: ctxJson,
+      }],
+    },
+  ];
+
+  if (testResult) {
+    const okLine = testResult.valid.length ? `✅ ${testResult.valid.map((v) => v.word).join(", ")}` : "";
+    const badLine = testResult.invalid.length ? `❌ ${testResult.invalid.map((v) => v.word).join(", ")}` : "";
+    const line = [okLine, badLine].filter(Boolean).join("    ") || "_(nothing to check)_";
+    modalBlocks.push({
+      type: "context",
+      elements: [{ type: "mrkdwn", text: line }],
+    });
+  }
+
   return {
     type: "modal",
     callback_id: "qbim_submit_score",
     private_metadata: JSON.stringify({ game_id: gameId, hand, button_pressed_at: buttonPressedAt }),
     title: text(`Hand ${hand}`),
     submit: text("Submit"),
-    blocks: [
-      {
-        type: "input",
-        block_id: "words_block",
-        label: text("Words Played"),
-        optional: true,
-        element: wordsInput,
-      },
-      {
-        type: "context",
-        elements: [
-          { type: "mrkdwn", text: "Score is calculated automatically from your cards. Use hyphens to show individual cards (e.g. qu-i-z) or just type the word." },
-        ],
-      },
-    ],
+    blocks: modalBlocks,
   };
 }
 

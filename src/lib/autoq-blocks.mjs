@@ -84,7 +84,7 @@ export function autoqStartModal() {
 /**
  * Score entry modal showing dealt cards.
  */
-export function autoqHandScoreModal(gameId, hand, dealtCards, buttonPressedAt = null, prefillWords = "") {
+export function autoqHandScoreModal(gameId, hand, dealtCards, buttonPressedAt = null, prefillWords = "", testInput = "", testResult = null) {
   const cardsDisplay = formatDealtCards(dealtCards);
   const wordsInput = {
     type: "plain_text_input",
@@ -93,28 +93,70 @@ export function autoqHandScoreModal(gameId, hand, dealtCards, buttonPressedAt = 
   };
   if (prefillWords) wordsInput.initial_value = prefillWords;
 
+  const testField = {
+    type: "plain_text_input",
+    action_id: "test_words",
+    placeholder: text("e.g. thermodynamic"),
+  };
+  if (testInput) testField.initial_value = testInput;
+
+  const ctxJson = JSON.stringify({ game_id: gameId, hand, dealt_cards: dealtCards, button_pressed_at: buttonPressedAt });
+
+  const modalBlocks = [
+    section(`*Your cards:*  ${cardsDisplay}`),
+    {
+      type: "input",
+      block_id: "words_block",
+      label: text("Words Played (leave blank if no words)"),
+      optional: true,
+      element: wordsInput,
+    },
+    {
+      type: "context",
+      elements: [
+        { type: "mrkdwn", text: "You may use hyphens to specify cards (e.g. qu-i-z)." },
+      ],
+    },
+    { type: "divider" },
+    {
+      type: "section",
+      text: { type: "mrkdwn", text: "*Test words* — check if a word would pass the dictionary without using your submission." },
+    },
+    {
+      type: "input",
+      block_id: "test_words_block",
+      label: text("Words to check"),
+      optional: true,
+      element: testField,
+    },
+    {
+      type: "actions",
+      elements: [{
+        type: "button",
+        action_id: "autoq_check_words",
+        text: text("Check"),
+        value: ctxJson,
+      }],
+    },
+  ];
+
+  if (testResult) {
+    const okLine = testResult.valid.length ? `✅ ${testResult.valid.map((v) => v.word).join(", ")}` : "";
+    const badLine = testResult.invalid.length ? `❌ ${testResult.invalid.map((v) => v.word).join(", ")}` : "";
+    const line = [okLine, badLine].filter(Boolean).join("    ") || "_(nothing to check)_";
+    modalBlocks.push({
+      type: "context",
+      elements: [{ type: "mrkdwn", text: line }],
+    });
+  }
+
   return {
     type: "modal",
     callback_id: "autoq_submit_score",
     private_metadata: JSON.stringify({ game_id: gameId, hand, dealt_cards: dealtCards, button_pressed_at: buttonPressedAt }),
     title: text(`AutoQ Hand ${hand}`),
     submit: text("Submit"),
-    blocks: [
-      section(`*Your cards:*  ${cardsDisplay}`),
-      {
-        type: "input",
-        block_id: "words_block",
-        label: text("Words Played (leave blank if no words)"),
-        optional: true,
-        element: wordsInput,
-      },
-      {
-        type: "context",
-        elements: [
-          { type: "mrkdwn", text: "You may use hyphens to specify cards (e.g. qu-i-z)." },
-        ],
-      },
-    ],
+    blocks: modalBlocks,
   };
 }
 

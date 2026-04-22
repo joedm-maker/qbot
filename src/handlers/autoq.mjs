@@ -154,6 +154,31 @@ async function handleAction(payload) {
       await renderHome(userId);
       break;
     }
+
+    case "autoq_check_words": {
+      await handleAutoqCheckWords(payload, action);
+      break;
+    }
+  }
+}
+
+async function handleAutoqCheckWords(payload, action) {
+  let ctx;
+  try { ctx = JSON.parse(action.value); } catch { return; }
+  const { game_id, hand, dealt_cards, button_pressed_at } = ctx;
+
+  const values = payload.view.state.values;
+  const wordsInput = values.words_block?.words?.value || "";
+  const testInput = values.test_words_block?.test_words?.value || "";
+  const testResult = testInput.trim() ? await validateWords(testInput) : { valid: [], invalid: [] };
+
+  try {
+    await slack().views.update({
+      view_id: payload.view.id,
+      view: autoqBlocks.autoqHandScoreModal(game_id, hand, dealt_cards, button_pressed_at, wordsInput, testInput, testResult),
+    });
+  } catch (err) {
+    console.warn("Failed to update AutoQ modal (check words):", err.message);
   }
 }
 

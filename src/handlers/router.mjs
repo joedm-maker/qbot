@@ -43,6 +43,7 @@ const AUTOQ_ACTIONS = new Set([
   "autoq_retry_hand",
   "autoq_mulligan",
   "autoq_quit",
+  "autoq_check_words",
 ]);
 const AUTOQ_CALLBACKS = new Set([
   "autoq_start_submit",
