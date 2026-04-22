@@ -96,6 +96,8 @@ export async function handler(event) {
     if (SCORE_ACTIONS.has(actionId)) return scoreEntryHandler(event);
     if (AUTOQ_ACTIONS.has(actionId)) return autoqHandler(event);
     if (LEADERBOARD_ACTIONS.has(actionId)) return leaderboardHandler(event);
+    // Vote actions (qbim_vote_word, qbim_vote_yes, qbim_vote_no)
+    if (actionId.startsWith("qbim_vote_")) return scoreEntryHandler(event);
     // Admin actions (dynamic IDs)
     if (actionId.startsWith("qbim_admin_")) return scoreEntryHandler(event);
   }

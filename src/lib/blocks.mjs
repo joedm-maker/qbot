@@ -1,4 +1,5 @@
 import { getHandRange } from "./cards.mjs";
+import { ACHIEVEMENTS } from "./db.mjs";
 
 // ── Block Kit helpers ───────────────────────────────────
 
@@ -317,6 +318,77 @@ export function handScoreModal(gameId, hand, buttonPressedAt = null, prefillWord
 }
 
 /**
+ * Dictionary rejection modal — word(s) not found, offers Vote or edit+resubmit.
+ */
+export function dictRejectModal(gameId, hand, buttonPressedAt, wordsInput, invalidWords, chosen) {
+  const wordsField = {
+    type: "plain_text_input",
+    action_id: "words",
+    placeholder: text("e.g. quiz or qu-i-z (leave blank if no words)"),
+    initial_value: wordsInput,
+  };
+  const bad = invalidWords.map((w) => `*${w}*`).join(", ");
+  const voteCtx = JSON.stringify({
+    game_id: gameId, hand, words: wordsInput,
+    invalid_words: invalidWords, button_pressed_at: buttonPressedAt, chosen,
+  });
+  return {
+    type: "modal",
+    callback_id: "qbim_submit_score",
+    private_metadata: JSON.stringify({ game_id: gameId, hand, button_pressed_at: buttonPressedAt }),
+    title: text(`Hand ${hand}`),
+    submit: text("Resubmit"),
+    blocks: [
+      {
+        type: "section",
+        text: { type: "mrkdwn", text: `⚠️ Not in the dictionary: ${bad}` },
+      },
+      {
+        type: "actions",
+        elements: [{
+          type: "button",
+          action_id: "qbim_vote_word",
+          text: text("🗳️ Vote"),
+          value: voteCtx,
+          style: "primary",
+        }],
+      },
+      {
+        type: "input",
+        block_id: "words_block",
+        label: text("Words Played"),
+        optional: true,
+        element: wordsField,
+      },
+      {
+        type: "context",
+        elements: [
+          { type: "mrkdwn", text: "Edit your words and tap *Resubmit*, or tap *Vote* to let other players decide." },
+        ],
+      },
+    ],
+  };
+}
+
+/**
+ * Vote-in-progress modal — shown after Vote button is tapped.
+ */
+export function voteWaitingModal(hand, invalidWords) {
+  const bad = invalidWords.map((w) => `*${w}*`).join(", ");
+  return {
+    type: "modal",
+    title: text(`Hand ${hand}`),
+    close: text("OK"),
+    blocks: [
+      {
+        type: "section",
+        text: { type: "mrkdwn", text: `🗳️ Vote started for ${bad}!\n\nOther players have 2 minutes to decide. You'll get a DM with the result.` },
+      },
+    ],
+  };
+}
+
+/**
  * Score choice modal — shown when multiple score interpretations exist.
  * E.g. "quiz" could be QU-I-Z (25 pts) or Q-U-I-Z (35 pts).
  */
@@ -563,8 +635,19 @@ export function playerCard(player, personalBests) {
     ]),
     ...(bh ? [context([`🎯 Best hand: H${bh.hand} (${bh.wins} wins, avg ${bh.avg})`])] : []),
     context([`🏅 *Personal Best:*  ${pbLine}`]),
+    ...achievementLine(player),
     ...(player.incomplete_games ? [context([`⚠️ ${player.incomplete_games} incomplete game${player.incomplete_games > 1 ? "s" : ""}`])] : []),
   ];
+}
+
+function achievementLine(player) {
+  const earned = player.achievements;
+  if (!earned || Object.keys(earned).length === 0) return [];
+  const badges = Object.keys(earned)
+    .filter((id) => ACHIEVEMENTS[id])
+    .map((id) => `${ACHIEVEMENTS[id].emoji} ${ACHIEVEMENTS[id].name}`)
+    .join("  ");
+  return badges ? [context([`*Achievements:*  ${badges}`])] : [];
 }
 
 // ── Admin Guest Join Modal ──────────────────────────────

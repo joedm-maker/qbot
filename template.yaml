@@ -173,6 +173,12 @@ Resources:
             RestApiId: !Ref QbimApi
             Path: /stats/live
             Method: GET
+        StatsValidateWords:
+          Type: Api
+          Properties:
+            RestApiId: !Ref QbimApi
+            Path: /stats/validatewords
+            Method: GET
         Warmer:
           Type: Schedule
           Properties:
@@ -206,6 +212,9 @@ Resources:
       Handler: src/handlers/vote-timer.handler
       CodeUri: .
       Timeout: 15
+      Environment:
+        Variables:
+          SCORE_WORKER_FUNCTION_NAME: !Ref ScoreWorkerFunction
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref GamesTable
@@ -217,6 +226,8 @@ Resources:
             TableName: !Ref DictionaryTable
         - DynamoDBCrudPolicy:
             TableName: !Ref VotesTable
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ScoreWorkerFunction
 
   # ---------- Score Worker Lambda (async save / validation) ----------
   ScoreWorkerFunction:

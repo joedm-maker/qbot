@@ -76,6 +76,17 @@ export async function updateAutoQGame(gameId, attrs) {
   await ddb.send(new UpdateCommand(params));
 }
 
+export async function getAutoQGamesByPlayer(userId) {
+  const { Items } = await ddb.send(new QueryCommand({
+    TableName: TABLE(),
+    IndexName: "player-index",
+    KeyConditionExpression: "player_id = :pid",
+    ExpressionAttributeValues: { ":pid": userId },
+    ScanIndexForward: false,
+  }));
+  return Items || [];
+}
+
 // ── Hand Scores ───────────────────────────────────────
 
 export async function putAutoQHandScore(gameId, hand, scoreData) {

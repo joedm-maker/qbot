@@ -6,6 +6,7 @@ import { getScoreOptions, getHandRange, formatWordsWithPoints } from "../lib/car
 import { renderHome, resolveNames, aggregateScores, findCurrentRound, ADMIN_USER } from "../lib/home.mjs";
 import { createQuicklerTimer, deleteQuicklerTimer } from "../lib/quickler.mjs";
 import { validateWords } from "../lib/dictionary.mjs";
+import { createVoteTimer, resolveVote, computeChosen } from "../lib/vote.mjs";
 
 // Lambda client for async-invoking the score worker. Lazy-loaded.
 let _lambda;
@@ -225,6 +226,17 @@ async function handleAction(payload) {
       break;
     }
 
+    case "qbim_vote_word": {
+      await handleVoteWord(payload, action);
+      break;
+    }
+
+    case "qbim_vote_yes":
+    case "qbim_vote_no": {
+      await handleVoteResponse(payload, action);
+      break;
+    }
+
     default: {
       break;
     }
@@ -295,12 +307,17 @@ async function submitScore(payload) {
     return validationError(`Too many cards for Hand ${hand}${mulligans > 0 ? ` with ${mulligans} mulligan${mulligans > 1 ? "s" : ""}` : ""} (max ${maxCards} cards).`);
   }
 
-  // Dictionary validation (sync — shows errors inline in the modal)
+  // Dictionary validation (sync — shows rejection modal with Vote button)
   const dictCheck = await validateWords(wordsInput);
   if (dictCheck.invalid.length) {
-    const bad = dictCheck.invalid.map((w) => `*${w.word}*`).join(", ");
-    const s = dictCheck.invalid.length > 1 ? "s" : "";
-    return validationError(`Not in the dictionary: ${bad}. Try other word${s}.`);
+    return {
+      statusCode: 200,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        response_action: "update",
+        view: blocks.dictRejectModal(game_id, hand, button_pressed_at, wordsInput, dictCheck.invalid.map((w) => w.word), null),
+      }),
+    };
   }
 
   // Multiple score options — let player choose
@@ -337,11 +354,17 @@ async function confirmScore(payload) {
   let chosen;
   try { chosen = JSON.parse(selectedValue); } catch { return respond(200); }
 
-  // Dictionary validation (sync — inline modal errors)
+  // Dictionary validation (sync — shows rejection modal with Vote button)
   const dictCheck = await validateWords(words);
   if (dictCheck.invalid.length) {
-    const bad = dictCheck.invalid.map((w) => `*${w.word}*`).join(", ");
-    return validationError(`Not in the dictionary: ${bad}. Try other words.`);
+    return {
+      statusCode: 200,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        response_action: "update",
+        view: blocks.dictRejectModal(game_id, hand, button_pressed_at, words, dictCheck.invalid.map((w) => w.word), chosen),
+      }),
+    };
   }
 
   // Valid — save async, close modal immediately
@@ -534,6 +557,35 @@ export async function autoAwardStars(game, hand, handScores, announce = true) {
     const isMost = pid === mostWordsWinner;
     const starCount = (isLongest ? 1 : 0) + (isMost ? 1 : 0);
     await db.updateScoreStars(game.game_id, `${pid}#${hand}`, starCount, isLongest, isMost);
+  }
+
+  // Build effective scores using the just-awarded stars
+  const effectiveScores = handScores.map((s) => {
+    const pid = s.player_slack_id;
+    const starCount = (pid === longestWinner ? 1 : 0) + (pid === mostWordsWinner ? 1 : 0);
+    return { pid, eff: (s.raw_score || 0) + starCount * 10 };
+  });
+
+  // ── Achievement: Strategic Retreat ────────────────────
+  // Awarded when a player takes a mulligan and still wins the round (sole highest effective score)
+  if (handScores.length >= 2) {
+    const maxEff = Math.max(...effectiveScores.map((e) => e.eff));
+    const effWinners = effectiveScores.filter((e) => e.eff === maxEff);
+    if (effWinners.length === 1) {
+      const winnerPid = effWinners[0].pid;
+      const mulliganKey = `${winnerPid}#${hand}`;
+      if ((game.mulligans?.[mulliganKey] || 0) > 0) {
+        const isNew = await db.addAchievement(winnerPid, "strategic-retreat", {
+          game_id: game.game_id, game_number: game.game_number, hand,
+        });
+        if (isNew) {
+          const def = db.ACHIEVEMENTS["strategic-retreat"];
+          await dmUser(winnerPid, {
+            text: `${def.emoji} Achievement unlocked: *${def.name}*\n${def.description}`,
+          });
+        }
+      }
+    }
   }
 
   // Build star summary for channel message
@@ -1022,6 +1074,151 @@ async function updatePlayerStats(game, allScores) {
   }
 }
 
+
+// ── Vote Handlers ─────────────────────────────────────
+
+async function handleVoteWord(payload, action) {
+  const userId = payload.user.id;
+  let ctx;
+  try { ctx = JSON.parse(action.value); } catch { return; }
+  const { game_id, hand, words, invalid_words, button_pressed_at, chosen } = ctx;
+
+  const game = await db.getGame(game_id);
+  if (!game) return;
+
+  const voters = game.players.filter((pid) => pid !== userId);
+  if (voters.length === 0) return;
+
+  const voteId = `vote-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const scheduleName = `qbim-vote-${voteId}`.replace(/[^a-zA-Z0-9_-]/g, "-");
+
+  // Resolve score option now so we can auto-save on approval
+  let resolvedChosen = chosen;
+  if (!resolvedChosen) {
+    resolvedChosen = computeChosen(words, hand, await db.getMulliganCount(game_id, userId, hand));
+  }
+
+  const vote = {
+    vote_id: voteId,
+    game_id, hand,
+    submitter: userId,
+    words,
+    invalid_words,
+    chosen: resolvedChosen,
+    button_pressed_at,
+    voters,
+    votes: {},
+    poll_messages: {},
+    status: "open",
+    created_at: new Date().toISOString(),
+    schedule_name: scheduleName,
+  };
+  await db.putVote(vote);
+
+  // Start 2-minute timer
+  await createVoteTimer(scheduleName, voteId);
+
+  // DM each voter with Yes/No poll
+  const names = await resolveNames(game.players);
+  const submitterName = names.get(userId) || userId;
+  const bad = invalid_words.map((w) => `*${w}*`).join(", ");
+
+  for (const voterId of voters) {
+    try {
+      const result = await dmUser(voterId, {
+        text: `Word vote: ${invalid_words.join(", ")}`,
+        blocks: [
+          {
+            type: "section",
+            text: { type: "mrkdwn", text: `🗳️ *${submitterName}* played ${bad} — is it a real word?\n\nYou have 2 minutes to vote.` },
+          },
+          {
+            type: "actions",
+            elements: [
+              {
+                type: "button",
+                action_id: "qbim_vote_yes",
+                text: { type: "plain_text", text: "✅ Yes", emoji: true },
+                value: voteId,
+                style: "primary",
+              },
+              {
+                type: "button",
+                action_id: "qbim_vote_no",
+                text: { type: "plain_text", text: "❌ No", emoji: true },
+                value: voteId,
+                style: "danger",
+              },
+            ],
+          },
+        ],
+      });
+      vote.poll_messages[voterId] = { channel: result.channel, ts: result.ts };
+    } catch (err) {
+      console.warn("Failed to DM voter:", voterId, err.message);
+    }
+  }
+
+  // Save poll message refs
+  await db.putVote(vote);
+
+  // Update the submitter's modal to "waiting" state
+  try {
+    await slack().views.update({
+      view_id: payload.view.id,
+      view: blocks.voteWaitingModal(hand, invalid_words),
+    });
+  } catch (err) {
+    console.warn("Failed to update modal:", err.message);
+  }
+}
+
+async function handleVoteResponse(payload, action) {
+  const voterId = payload.user.id;
+  const voteId = action.value;
+  const isYes = action.action_id === "qbim_vote_yes";
+
+  const vote = await db.getVote(voteId);
+  if (!vote || vote.status !== "open") return;
+
+  // Record vote
+  vote.votes[voterId] = isYes ? "yes" : "no";
+  await db.putVote(vote);
+
+  // Update voter's poll message to show their choice
+  const pollMsg = vote.poll_messages?.[voterId];
+  if (pollMsg) {
+    const bad = vote.invalid_words.map((w) => `*${w}*`).join(", ");
+    try {
+      await slack().chat.update({
+        channel: pollMsg.channel,
+        ts: pollMsg.ts,
+        text: `You voted ${isYes ? "✅ Yes" : "❌ No"}`,
+        blocks: [{
+          type: "section",
+          text: { type: "mrkdwn", text: `🗳️ You voted ${isYes ? "✅ Yes" : "❌ No"} for ${bad}. Waiting for others…` },
+        }],
+      });
+    } catch (err) {
+      console.warn("Failed to update poll message:", err.message);
+    }
+  }
+
+  // Check for early resolution
+  const yesCount = Object.values(vote.votes).filter((v) => v === "yes").length;
+  const noCount = Object.values(vote.votes).filter((v) => v === "no").length;
+  const remaining = vote.voters.length - yesCount - noCount;
+
+  // Approved early: even if all remaining vote no, yes still >2/3
+  const approvedEarly = yesCount * 3 > (vote.voters.length) * 2;
+  // Rejected early: even if all remaining vote yes, can't reach >2/3
+  const rejectedEarly = (yesCount + remaining) * 3 <= (vote.voters.length) * 2;
+
+  if (approvedEarly || rejectedEarly || remaining === 0) {
+    const approved = approvedEarly || (yesCount * 3 > (yesCount + noCount) * 2);
+    await resolveVote(vote, approved);
+  }
+}
 
 function validationError(message) {
   return {

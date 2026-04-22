@@ -4,6 +4,7 @@
  * No Slack signature required — public read endpoints.
  */
 import * as db from "../lib/db.mjs";
+import { validateWords } from "../lib/dictionary.mjs";
 
 const CORS_HEADERS = {
   "Content-Type": "application/json",
@@ -22,6 +23,7 @@ export async function handleStatsRequest(event) {
     if (path === "/stats/games") return await getGames();
     if (path === "/stats/scores") return await getScores();
     if (path === "/stats/live") return await getLiveGame();
+    if (path === "/stats/validatewords") return await validateWordsEndpoint(event);
     return { statusCode: 404, headers: CORS_HEADERS, body: '{"error":"Not found"}' };
   } catch (err) {
     console.error("stats-api error:", err);
@@ -211,6 +213,13 @@ async function scanAll(tableName) {
     lastKey = result.LastEvaluatedKey;
   } while (lastKey);
   return items;
+}
+
+async function validateWordsEndpoint(event) {
+  const words = event.queryStringParameters?.words;
+  if (!words) return respond({ valid: [], invalid: [] });
+  const result = await validateWords(words);
+  return respond(result);
 }
 
 function respond(data) {

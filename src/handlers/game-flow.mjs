@@ -122,6 +122,17 @@ async function handleViewSubmission(payload) {
       });
     }
 
+    // Reject if the user already has an OPEN or ACTIVE game
+    const existing = await findActiveGameForUser(userId);
+    if (existing) {
+      return respond(200, {
+        response_action: "errors",
+        errors: {
+          game_type_block: `You already have an active game (#${existing.game_number}). Finish or end it first.`,
+        },
+      });
+    }
+
     const game = await createNewGame(userId, gameType);
     await postLobbyMessage(game);
 
@@ -202,6 +213,17 @@ async function handleViewSubmission(payload) {
 }
 
 // ── Core Logic ─────────────────────────────────────────
+
+async function findActiveGameForUser(userId) {
+  const today = todayStr();
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const todayGames = await db.getGamesByDate(today);
+  const yesterdayGames = await db.getGamesByDate(yesterday);
+  const allGames = [...todayGames, ...yesterdayGames];
+  return allGames.find(
+    (g) => (g.status === "OPEN" || g.status === "ACTIVE") && g.players.includes(userId)
+  ) || null;
+}
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10);

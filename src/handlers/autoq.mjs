@@ -164,6 +164,17 @@ async function handleViewSubmission(payload) {
   const userId = payload.user.id;
 
   if (callbackId === "autoq_start_submit") {
+    // Reject if the user already has an active AutoQ game
+    const existing = await findActiveAutoQForUser(userId);
+    if (existing) {
+      return respond(200, {
+        response_action: "errors",
+        errors: {
+          opponent_count_block: "You already have an AutoQ game in progress. Finish or quit it first.",
+        },
+      });
+    }
+
     const opponentCount = Number(
       payload.view.state.values.opponent_count_block.opponent_count.selected_option.value
     );
@@ -184,6 +195,11 @@ async function handleViewSubmission(payload) {
 }
 
 // ── Game Creation ─────────────────────────────────────
+
+async function findActiveAutoQForUser(userId) {
+  const games = await autoqDb.getAutoQGamesByPlayer(userId);
+  return games.find((g) => g.status === "ACTIVE") || null;
+}
 
 async function createAutoQGame(userId, opponentCount) {
   const gameId = crypto.randomUUID();
