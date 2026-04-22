@@ -125,7 +125,7 @@ export function autoqHandScoreModal(gameId, hand, dealtCards, buttonPressedAt = 
     {
       type: "input",
       block_id: "test_words_block",
-      label: text("Words to check"),
+      label: text("Test a word"),
       optional: true,
       element: testField,
     },

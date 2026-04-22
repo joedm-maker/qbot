@@ -325,7 +325,7 @@ export function handScoreModal(gameId, hand, buttonPressedAt = null, prefillWord
     {
       type: "input",
       block_id: "test_words_block",
-      label: text("Words to check"),
+      label: text("Test a word"),
       optional: true,
       element: testField,
     },
@@ -413,7 +413,7 @@ export function dictRejectModal(gameId, hand, buttonPressedAt, wordsInput, inval
     {
       type: "input",
       block_id: "test_words_block",
-      label: text("Words to check"),
+      label: text("Test a word"),
       optional: true,
       element: testField,
     },
