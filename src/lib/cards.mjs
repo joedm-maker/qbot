@@ -77,6 +77,20 @@ export function formatWordsWithPoints(input) {
   }).join("  ");
 }
 
+/**
+ * Canonicalize a words submission: strip leading/trailing separators,
+ * collapse internal runs of (+, whitespace, comma) into a single "+".
+ * "rump+" → "rump", "hi+clef" → "hi+clef", "  a ,, b " → "a+b".
+ */
+export function normalizeWords(input) {
+  return String(input || "")
+    .replace(/[\s,+]+/g, " ")
+    .trim()
+    .split(" ")
+    .filter(Boolean)
+    .join("+");
+}
+
 export const CARD_VALUES = {
   A: 2,  B: 8,  C: 8,  D: 5,  E: 2,  F: 6,  G: 6,  H: 7,
   I: 2,  J: 13, K: 8,  L: 3,  M: 5,  N: 5,  O: 2,  P: 6,

@@ -2,7 +2,7 @@ import { verifySlackSignature, parseSlackBody } from "../lib/verify.mjs";
 import { slack, CHANNEL, dmAllPlayers, dmUser } from "../lib/slack.mjs";
 import * as db from "../lib/db.mjs";
 import * as blocks from "../lib/blocks.mjs";
-import { getScoreOptions, getHandRange, formatWordsWithPoints } from "../lib/cards.mjs";
+import { getScoreOptions, getHandRange, formatWordsWithPoints, normalizeWords } from "../lib/cards.mjs";
 import { renderHome, resolveNames, aggregateScores, findCurrentRound, ADMIN_USER } from "../lib/home.mjs";
 import { createQuicklerTimer, deleteQuicklerTimer } from "../lib/quickler.mjs";
 import { validateWords } from "../lib/dictionary.mjs";
@@ -443,7 +443,7 @@ export async function saveScore(userId, game_id, hand, wordsInput, chosen, butto
     player_slack_id: userId,
     hand,
     raw_score: rawScore,
-    words: wordsInput,
+    words: normalizeWords(wordsInput),
     word_count: wordCount,
     longest_word_letters: longestWordLetters,
     mulligans,
@@ -789,7 +789,7 @@ async function adminSaveEdit(payload) {
     player_slack_id: player_id,
     hand,
     raw_score: chosen.score,
-    words: wordsInput,
+    words: normalizeWords(wordsInput),
     word_count: wordCount,
     longest_word_letters: longestWordLetters,
     breakdown: chosen.breakdown,
