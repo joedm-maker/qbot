@@ -30,6 +30,12 @@ export function entryRejected(entry) {
   const fl = (entry?.fl || "").toLowerCase();
   if (fl.includes("prefix") || fl.includes("suffix") || fl.includes("combining form")) return true;
   if (fl === "abbreviation" || fl === "contraction") return true;
+  if (fl === "biographical name" || fl === "geographical name" || fl === "trademark") return true;
+  // Proper nouns: MW keeps the original capitalization in meta.id. Reject
+  // anything whose headword starts uppercase (e.g. "Oz") — common nouns
+  // spelled the same way (e.g. "ace") still have a lowercase entry that passes.
+  const metaId = (entry?.meta?.id || "").split(":")[0];
+  if (metaId && metaId[0] === metaId[0].toUpperCase() && metaId[0] !== metaId[0].toLowerCase()) return true;
   const lbs = (entry?.lbs || []).map((l) => String(l).toLowerCase());
   if (lbs.includes("slang") || lbs.includes("informal") || lbs.includes("substandard")) return true;
   return false;
