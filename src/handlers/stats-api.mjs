@@ -24,6 +24,7 @@ export async function handleStatsRequest(event) {
     if (path === "/stats/scores") return await getScores();
     if (path === "/stats/live") return await getLiveGame();
     if (path === "/stats/validatewords") return await validateWordsEndpoint(event);
+    if (path === "/stats/dictionary") return await getDictionary();
     return { statusCode: 404, headers: CORS_HEADERS, body: '{"error":"Not found"}' };
   } catch (err) {
     console.error("stats-api error:", err);
@@ -220,6 +221,16 @@ async function validateWordsEndpoint(event) {
   if (!words) return respond({ valid: [], invalid: [] });
   const result = await validateWords(words);
   return respond(result);
+}
+
+// Returns just the rejected words — everything else is valid by omission.
+// Small payload (~a few hundred entries), cacheable on the client.
+async function getDictionary() {
+  const items = await scanAll("qbim-dictionary");
+  const invalid = items
+    .filter((i) => i.valid === false)
+    .map((i) => String(i.word).toLowerCase());
+  return respond({ invalid });
 }
 
 function respond(data) {

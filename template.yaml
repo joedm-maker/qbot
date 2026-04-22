@@ -179,6 +179,12 @@ Resources:
             RestApiId: !Ref QbimApi
             Path: /stats/validatewords
             Method: GET
+        StatsDictionary:
+          Type: Api
+          Properties:
+            RestApiId: !Ref QbimApi
+            Path: /stats/dictionary
+            Method: GET
         Warmer:
           Type: Schedule
           Properties:
