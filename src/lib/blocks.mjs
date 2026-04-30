@@ -287,91 +287,24 @@ export function endGameModal(gameId) {
 }
 
 /**
- * Hand score entry modal.
- */
-export function handScoreModal(gameId, hand, buttonPressedAt = null, prefillWords = "", testInput = "", testResult = null) {
-  const wordsInput = {
-    type: "plain_text_input",
-    action_id: "words",
-    placeholder: text("e.g. quiz or qu-i-z (leave blank if no words)"),
-  };
-  if (prefillWords) wordsInput.initial_value = prefillWords;
-
-  const testField = {
-    type: "plain_text_input",
-    action_id: "test_words",
-    placeholder: text("e.g. thermodynamic"),
-  };
-  if (testInput) testField.initial_value = testInput;
-
-  const ctxJson = JSON.stringify({ game_id: gameId, hand, button_pressed_at: buttonPressedAt });
-
-  const modalBlocks = [
-    {
-      type: "input",
-      block_id: "words_block",
-      label: text("Words Played"),
-      optional: true,
-      element: wordsInput,
-    },
-    {
-      type: "context",
-      elements: [
-        { type: "mrkdwn", text: "Score is calculated automatically from your cards. Use hyphens to show individual cards (e.g. qu-i-z) or just type the word." },
-      ],
-    },
-    { type: "divider" },
-    {
-      type: "section",
-      text: { type: "mrkdwn", text: "*Test words* — check if a word would pass the dictionary without using your submission." },
-    },
-    {
-      type: "input",
-      block_id: "test_words_block",
-      label: text("Test a word"),
-      optional: true,
-      element: testField,
-    },
-    {
-      type: "actions",
-      elements: [{
-        type: "button",
-        action_id: "qbim_check_words",
-        text: text("Check"),
-        value: ctxJson,
-      }],
-    },
-  ];
-
-  if (testResult) {
-    const okLine = testResult.valid.length ? `✅ ${testResult.valid.map((v) => v.word).join(", ")}` : "";
-    const badLine = testResult.invalid.length ? `❌ ${testResult.invalid.map((v) => v.word).join(", ")}` : "";
-    const line = [okLine, badLine].filter(Boolean).join("    ") || "_(nothing to check)_";
-    modalBlocks.push({
-      type: "context",
-      elements: [{ type: "mrkdwn", text: line }],
-    });
-  }
-
-  return {
-    type: "modal",
-    callback_id: "qbim_submit_score",
-    private_metadata: JSON.stringify({ game_id: gameId, hand, button_pressed_at: buttonPressedAt }),
-    title: text(`Hand ${hand}`),
-    submit: text("Submit"),
-    blocks: modalBlocks,
-  };
-}
-
-/**
- * Dictionary rejection modal — word(s) not found, offers Vote or edit+resubmit.
- * Also includes a no-stakes "test words" box so players can probe the dictionary
- * without consuming their real submission.
+ * Hand score entry modal — unified for normal entry and dictionary-rejection state.
  *
- * Vote button is placed at the very bottom (with danger style) to keep it out of
- * accidental-tap range next to the primary Resubmit button.
+ * `opts`:
+ *   - wordsInput:   prefill for the Words Played field
+ *   - testResult:   { valid, invalid } from a Test tap; rendered as a context line
+ *   - invalidWords: present when the prior submission was rejected; activates the
+ *                   warning banner, the "Resubmit" footer label, and the Vote button
+ *   - chosen:       resolved score option when rejection came from the score-choice modal
+ *
+ * The Vote button is always rendered at the bottom so its position never shifts.
+ * It is styled as `danger` and labeled "Vote to accept" only when there are pending
+ * invalid words; otherwise it is unstyled, labeled "Vote", and the handler treats
+ * it as a no-op.
  */
-export function dictRejectModal(gameId, hand, buttonPressedAt, wordsInput, invalidWords, chosen, testInput = "", testResult = null) {
+export function handScoreModal(gameId, hand, buttonPressedAt = null, opts = {}) {
+  const { wordsInput = "", testResult = null, invalidWords = null, chosen = null } = opts;
+  const inRejection = Array.isArray(invalidWords) && invalidWords.length > 0;
+
   const wordsField = {
     type: "plain_text_input",
     action_id: "words",
@@ -379,57 +312,50 @@ export function dictRejectModal(gameId, hand, buttonPressedAt, wordsInput, inval
   };
   if (wordsInput) wordsField.initial_value = wordsInput;
 
-  const testField = {
-    type: "plain_text_input",
-    action_id: "test_words",
-    placeholder: text("e.g. thermodynamic"),
-  };
-  if (testInput) testField.initial_value = testInput;
-
-  const bad = invalidWords.map((w) => `*${w}*`).join(", ");
   const ctxJson = JSON.stringify({
-    game_id: gameId, hand, words: wordsInput,
-    invalid_words: invalidWords, button_pressed_at: buttonPressedAt, chosen,
+    game_id: gameId, hand, button_pressed_at: buttonPressedAt,
+    invalid_words: inRejection ? invalidWords : null,
+    chosen: inRejection ? chosen : null,
+    words: inRejection ? wordsInput : null,
   });
 
-  const modalBlocks = [
-    {
+  const modalBlocks = [];
+
+  if (inRejection) {
+    const bad = invalidWords.map((w) => `*${w}*`).join(", ");
+    modalBlocks.push({
       type: "section",
       text: { type: "mrkdwn", text: `⚠️ Not in the dictionary: ${bad}` },
-    },
-    {
-      type: "input",
-      block_id: "words_block",
-      label: text("Words Played"),
-      optional: true,
-      element: wordsField,
-    },
-    {
-      type: "context",
-      elements: [{ type: "mrkdwn", text: "Edit your words and tap *Resubmit*." }],
-    },
-    { type: "divider" },
-    {
-      type: "section",
-      text: { type: "mrkdwn", text: "*Test words* — try any words without using your submission." },
-    },
-    {
-      type: "input",
-      block_id: "test_words_block",
-      label: text("Test a word"),
-      optional: true,
-      element: testField,
-    },
-    {
-      type: "actions",
-      elements: [{
-        type: "button",
-        action_id: "qbim_check_words",
-        text: text("Check"),
-        value: ctxJson,
-      }],
-    },
-  ];
+    });
+  }
+
+  modalBlocks.push({
+    type: "input",
+    block_id: "words_block",
+    label: text("Words Played"),
+    optional: true,
+    element: wordsField,
+  });
+
+  modalBlocks.push({
+    type: "context",
+    elements: [{
+      type: "mrkdwn",
+      text: inRejection
+        ? "Edit your words and tap *Resubmit*, or *Test* to dictionary-check without submitting."
+        : "Score is calculated automatically. Use hyphens to show individual cards (e.g. qu-i-z). Tap *Test* to dictionary-check without submitting.",
+    }],
+  });
+
+  modalBlocks.push({
+    type: "actions",
+    elements: [{
+      type: "button",
+      action_id: "qbim_check_words",
+      text: text("Test"),
+      value: ctxJson,
+    }],
+  });
 
   if (testResult) {
     const okLine = testResult.valid.length ? `✅ ${testResult.valid.map((v) => v.word).join(", ")}` : "";
@@ -442,23 +368,26 @@ export function dictRejectModal(gameId, hand, buttonPressedAt, wordsInput, inval
   }
 
   modalBlocks.push({ type: "divider" });
-  modalBlocks.push({
-    type: "actions",
-    elements: [{
-      type: "button",
-      action_id: "qbim_vote_word",
-      text: text("🗳️ Vote to accept"),
-      value: ctxJson,
-      style: "danger",
-    }],
-  });
+
+  const voteBtn = {
+    type: "button",
+    action_id: "qbim_vote_word",
+    text: text(inRejection ? "🗳️ Vote to accept" : "🗳️ Vote"),
+    value: ctxJson,
+  };
+  if (inRejection) voteBtn.style = "danger";
+  modalBlocks.push({ type: "actions", elements: [voteBtn] });
 
   return {
     type: "modal",
     callback_id: "qbim_submit_score",
-    private_metadata: JSON.stringify({ game_id: gameId, hand, button_pressed_at: buttonPressedAt }),
+    private_metadata: JSON.stringify({
+      game_id: gameId, hand, button_pressed_at: buttonPressedAt,
+      invalid_words: inRejection ? invalidWords : null,
+      chosen: inRejection ? chosen : null,
+    }),
     title: text(`Hand ${hand}`),
-    submit: text("Resubmit"),
+    submit: text(inRejection ? "Resubmit" : "Submit"),
     blocks: modalBlocks,
   };
 }

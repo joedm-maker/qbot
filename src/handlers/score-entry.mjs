@@ -84,7 +84,7 @@ async function handleAction(payload) {
       const buttonPressedAt = action.action_ts || null;
       await slack().views.open({
         trigger_id: payload.trigger_id,
-        view: blocks.handScoreModal(game_id, hand, buttonPressedAt, words || ""),
+        view: blocks.handScoreModal(game_id, hand, buttonPressedAt, { wordsInput: words || "" }),
       });
       break;
     }
@@ -324,7 +324,11 @@ async function submitScore(payload) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         response_action: "update",
-        view: blocks.dictRejectModal(game_id, hand, button_pressed_at, wordsInput, dictCheck.invalid.map((w) => w.word), null),
+        view: blocks.handScoreModal(game_id, hand, button_pressed_at, {
+          wordsInput,
+          invalidWords: dictCheck.invalid.map((w) => w.word),
+          chosen: null,
+        }),
       }),
     };
   }
@@ -371,7 +375,11 @@ async function confirmScore(payload) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         response_action: "update",
-        view: blocks.dictRejectModal(game_id, hand, button_pressed_at, words, dictCheck.invalid.map((w) => w.word), chosen),
+        view: blocks.handScoreModal(game_id, hand, button_pressed_at, {
+          wordsInput: words,
+          invalidWords: dictCheck.invalid.map((w) => w.word),
+          chosen,
+        }),
       }),
     };
   }
@@ -1109,6 +1117,10 @@ async function handleVoteWord(payload, action) {
   try { ctx = JSON.parse(action.value); } catch { return; }
   const { game_id, hand, words, invalid_words, button_pressed_at, chosen } = ctx;
 
+  // Vote button is always rendered (so its position never shifts) but is only
+  // actionable when the modal is in dictionary-rejection state.
+  if (!Array.isArray(invalid_words) || invalid_words.length === 0) return;
+
   const game = await db.getGame(game_id);
   if (!game) return;
 
@@ -1206,16 +1218,15 @@ async function handleCheckWords(payload, action) {
 
   const values = payload.view.state.values;
   const wordsInput = values.words_block?.words?.value || "";
-  const testInput = values.test_words_block?.test_words?.value || "";
 
-  const testResult = testInput.trim() ? await validateWords(testInput) : { valid: [], invalid: [] };
+  const testResult = wordsInput.trim() ? await validateWords(wordsInput) : { valid: [], invalid: [] };
 
-  // If this Check came from the rejection modal, re-render that modal
-  // (preserves the Vote button and warning message). Otherwise we're in
-  // the regular hand-score modal — re-render that one instead.
-  const view = invalid_words
-    ? blocks.dictRejectModal(game_id, hand, button_pressed_at, wordsInput, invalid_words, chosen, testInput, testResult)
-    : blocks.handScoreModal(game_id, hand, button_pressed_at, wordsInput, testInput, testResult);
+  const view = blocks.handScoreModal(game_id, hand, button_pressed_at, {
+    wordsInput,
+    testResult,
+    invalidWords: invalid_words || null,
+    chosen: chosen || null,
+  });
 
   try {
     await slack().views.update({ view_id: payload.view.id, view });

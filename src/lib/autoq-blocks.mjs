@@ -83,22 +83,21 @@ export function autoqStartModal() {
 
 /**
  * Score entry modal showing dealt cards.
+ *
+ * `opts`:
+ *   - wordsInput:  prefill for the Words Played field
+ *   - testResult:  { valid, invalid } from a Test tap; rendered as a context line
  */
-export function autoqHandScoreModal(gameId, hand, dealtCards, buttonPressedAt = null, prefillWords = "", testInput = "", testResult = null) {
+export function autoqHandScoreModal(gameId, hand, dealtCards, buttonPressedAt = null, opts = {}) {
+  const { wordsInput = "", testResult = null } = opts;
   const cardsDisplay = formatDealtCards(dealtCards);
-  const wordsInput = {
+
+  const wordsField = {
     type: "plain_text_input",
     action_id: "words",
     placeholder: text("e.g. quiz or qu-i-z"),
   };
-  if (prefillWords) wordsInput.initial_value = prefillWords;
-
-  const testField = {
-    type: "plain_text_input",
-    action_id: "test_words",
-    placeholder: text("e.g. thermodynamic"),
-  };
-  if (testInput) testField.initial_value = testInput;
+  if (wordsInput) wordsField.initial_value = wordsInput;
 
   const ctxJson = JSON.stringify({ game_id: gameId, hand, dealt_cards: dealtCards, button_pressed_at: buttonPressedAt });
 
@@ -109,32 +108,20 @@ export function autoqHandScoreModal(gameId, hand, dealtCards, buttonPressedAt = 
       block_id: "words_block",
       label: text("Words Played (leave blank if no words)"),
       optional: true,
-      element: wordsInput,
+      element: wordsField,
     },
     {
       type: "context",
       elements: [
-        { type: "mrkdwn", text: "You may use hyphens to specify cards (e.g. qu-i-z)." },
+        { type: "mrkdwn", text: "Use hyphens to specify cards (e.g. qu-i-z). Tap *Test* to dictionary-check without submitting." },
       ],
-    },
-    { type: "divider" },
-    {
-      type: "section",
-      text: { type: "mrkdwn", text: "*Test words* — check if a word would pass the dictionary without using your submission." },
-    },
-    {
-      type: "input",
-      block_id: "test_words_block",
-      label: text("Test a word"),
-      optional: true,
-      element: testField,
     },
     {
       type: "actions",
       elements: [{
         type: "button",
         action_id: "autoq_check_words",
-        text: text("Check"),
+        text: text("Test"),
         value: ctxJson,
       }],
     },

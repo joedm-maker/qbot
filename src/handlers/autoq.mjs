@@ -78,7 +78,7 @@ async function handleAction(payload) {
       const buttonPressedAt = action.action_ts || null;
       await slack().views.open({
         trigger_id: payload.trigger_id,
-        view: autoqBlocks.autoqHandScoreModal(game_id, hand, dealt_cards, buttonPressedAt, words || ""),
+        view: autoqBlocks.autoqHandScoreModal(game_id, hand, dealt_cards, buttonPressedAt, { wordsInput: words || "" }),
       });
       break;
     }
@@ -169,13 +169,12 @@ async function handleAutoqCheckWords(payload, action) {
 
   const values = payload.view.state.values;
   const wordsInput = values.words_block?.words?.value || "";
-  const testInput = values.test_words_block?.test_words?.value || "";
-  const testResult = testInput.trim() ? await validateWords(testInput) : { valid: [], invalid: [] };
+  const testResult = wordsInput.trim() ? await validateWords(wordsInput) : { valid: [], invalid: [] };
 
   try {
     await slack().views.update({
       view_id: payload.view.id,
-      view: autoqBlocks.autoqHandScoreModal(game_id, hand, dealt_cards, button_pressed_at, wordsInput, testInput, testResult),
+      view: autoqBlocks.autoqHandScoreModal(game_id, hand, dealt_cards, button_pressed_at, { wordsInput, testResult }),
     });
   } catch (err) {
     console.warn("Failed to update AutoQ modal (check words):", err.message);
