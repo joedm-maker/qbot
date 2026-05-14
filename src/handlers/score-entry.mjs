@@ -69,9 +69,13 @@ async function handleAction(payload) {
       if (hand < 3 || hand > 10 || !Number.isInteger(hand)) return;
       // Capture Slack's action timestamp as the closest proxy for when the user pressed the button
       const buttonPressedAt = action.action_ts || null;
+      // Pre-fill with the player's existing submission so Edit doesn't wipe their score on blank submit.
+      const priorScores = await db.getScoresForGameHand(gameId, hand);
+      const prior = priorScores.find((s) => s.player_slack_id === payload.user.id);
+      const wordsInput = prior?.words ? prior.words.replace(/\+/g, " ") : "";
       await slack().views.open({
         trigger_id: payload.trigger_id,
-        view: blocks.handScoreModal(gameId, hand, buttonPressedAt),
+        view: blocks.handScoreModal(gameId, hand, buttonPressedAt, { wordsInput }),
       });
       break;
     }
@@ -495,20 +499,7 @@ export async function saveScore(userId, game_id, hand, wordsInput, chosen, butto
         quickler_timer_schedule_name: scheduleName,
       });
       await createQuicklerTimer(scheduleName, game_id, hand);
-
-      // DM other eligible players that the clock has started
-      const names = await resolveNames(game.players);
-      const submitterName = names.get(userId) || userId;
-      const otherPlayers = eligiblePlayers.filter((pid) => pid !== userId);
-      for (const pid of otherPlayers) {
-        try {
-          await dmUser(pid, {
-            text: `${submitterName} submitted! You have 30 seconds to submit Hand ${hand}.`,
-          });
-        } catch (err) {
-          console.warn("Failed to DM timer start:", pid, err.message);
-        }
-      }
+      // Quickler is in-person; no DM blast — home tabs refresh on submit.
     }
   }
 
@@ -665,10 +656,12 @@ export async function autoAwardStars(game, hand, handScores, announce = true) {
       dealerLine = `\n:point_right: *${dealerName} deals Hand ${hand + 1}* (${3 + hand + 1} cards each)`;
     }
 
-    const msgBlocks = [
-      { type: "section", text: { type: "mrkdwn", text: `*Hand ${hand} complete!*\n${playerLines.join("\n")}\n\n${starSummary}${dealerLine}` } },
-    ];
-    await dmAllPlayers(game.players, { text: `Hand ${hand} complete! ${starSummary}`, blocks: msgBlocks });
+    if (game.game_type !== "Quickler") {
+      const msgBlocks = [
+        { type: "section", text: { type: "mrkdwn", text: `*Hand ${hand} complete!*\n${playerLines.join("\n")}\n\n${starSummary}${dealerLine}` } },
+      ];
+      await dmAllPlayers(game.players, { text: `Hand ${hand} complete! ${starSummary}`, blocks: msgBlocks });
+    }
 
     // After last hand, enter review mode instead of completing immediately
     if (hand === lastHand) {
@@ -897,10 +890,12 @@ async function postFinalLeaderboard(game, allScores) {
     return `${prefix}*${s.name}* — Raw: ${s.raw} | Stars: ${"★".repeat(s.stars)} (${s.stars}) | Bonus: +${s.stars * 10} | *Final: ${s.final}*`;
   });
 
-  const msgBlocks = [
-    { type: "section", text: { type: "mrkdwn", text: `*Game #${game.game_number} — Final Standings*\n\n${lines.join("\n")}` } },
-  ];
-  await dmAllPlayers(allPlayerIds, { text: "Game complete! Final standings:", blocks: msgBlocks });
+  if (game.game_type !== "Quickler") {
+    const msgBlocks = [
+      { type: "section", text: { type: "mrkdwn", text: `*Game #${game.game_number} — Final Standings*\n\n${lines.join("\n")}` } },
+    ];
+    await dmAllPlayers(allPlayerIds, { text: "Game complete! Final standings:", blocks: msgBlocks });
+  }
 }
 
 async function postSuperlatives(game, allScores) {

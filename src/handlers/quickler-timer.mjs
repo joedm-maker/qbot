@@ -5,10 +5,8 @@
  * submits a hand in a Quickler game. Auto-zeros any players who
  * haven't submitted, then completes the hand.
  */
-import { dmUser, dmAllPlayers } from "../lib/slack.mjs";
 import * as db from "../lib/db.mjs";
-import { getHandRange } from "../lib/cards.mjs";
-import { renderHome, resolveNames } from "../lib/home.mjs";
+import { renderHome } from "../lib/home.mjs";
 
 export async function handler(event) {
   const { game_id, hand } = event;
@@ -67,12 +65,6 @@ export async function handler(event) {
       submitted_at: new Date().toISOString(),
       quickler_timed_out: true,
     });
-
-    try {
-      await dmUser(pid, { text: `Time's up! You scored 0 for Hand ${hand}.` });
-    } catch (err) {
-      console.warn("Failed to DM timed-out player:", pid, err.message);
-    }
   }
 
   // Clear timer fields
