@@ -79,7 +79,7 @@ export async function handler(event) {
   }
 
   // Web-app gameplay — Bearer JWT auth, no Slack signature
-  if (event.resource === "/games/me" || event.resource === "/games/join" || event.resource === "/games/mulligan" || event.resource === "/scores") {
+  if (event.resource?.startsWith("/games/") || event.resource === "/scores" || event.resource === "/votes/start") {
     event.path = event.resource;
     return handleWebGameRequest(event);
   }

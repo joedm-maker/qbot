@@ -249,11 +249,29 @@ Resources:
             RestApiId: !Ref QbimApi
             Path: /games/mulligan
             Method: POST
+        GamesDrop:
+          Type: Api
+          Properties:
+            RestApiId: !Ref QbimApi
+            Path: /games/drop
+            Method: POST
+        GamesFinish:
+          Type: Api
+          Properties:
+            RestApiId: !Ref QbimApi
+            Path: /games/finish
+            Method: POST
         Scores:
           Type: Api
           Properties:
             RestApiId: !Ref QbimApi
             Path: /scores
+            Method: POST
+        VotesStart:
+          Type: Api
+          Properties:
+            RestApiId: !Ref QbimApi
+            Path: /votes/start
             Method: POST
         Warmer:
           Type: Schedule

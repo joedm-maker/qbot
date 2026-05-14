@@ -6,7 +6,7 @@ import { getScoreOptions, getHandRange, formatWordsWithPoints, normalizeWords } 
 import { renderHome, resolveNames, aggregateScores, findCurrentRound, ADMIN_USER } from "../lib/home.mjs";
 import { createQuicklerTimer, deleteQuicklerTimer } from "../lib/quickler.mjs";
 import { validateWords } from "../lib/dictionary.mjs";
-import { createVoteTimer, resolveVote, computeChosen } from "../lib/vote.mjs";
+import { resolveVote, startWordVote } from "../lib/vote.mjs";
 
 // Lambda client for async-invoking the score worker. Lazy-loaded.
 let _lambda;
@@ -1112,84 +1112,12 @@ async function handleVoteWord(payload, action) {
   // actionable when the modal is in dictionary-rejection state.
   if (!Array.isArray(invalid_words) || invalid_words.length === 0) return;
 
-  const game = await db.getGame(game_id);
-  if (!game) return;
-
-  const voters = game.players.filter((pid) => pid !== userId);
-  if (voters.length === 0) return;
-
-  const voteId = `vote-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const scheduleName = `qbim-vote-${voteId}`.replace(/[^a-zA-Z0-9_-]/g, "-");
-
-  // Resolve score option now so we can auto-save on approval
-  let resolvedChosen = chosen;
-  if (!resolvedChosen) {
-    resolvedChosen = computeChosen(words, hand, await db.getMulliganCount(game_id, userId, hand));
+  try {
+    await startWordVote({ userId, game_id, hand, words, invalid_words, chosen, button_pressed_at });
+  } catch (err) {
+    console.warn("startWordVote failed:", err.message);
+    return;
   }
-
-  const vote = {
-    vote_id: voteId,
-    game_id, hand,
-    submitter: userId,
-    words,
-    invalid_words,
-    chosen: resolvedChosen,
-    button_pressed_at,
-    voters,
-    votes: {},
-    poll_messages: {},
-    status: "open",
-    created_at: new Date().toISOString(),
-    schedule_name: scheduleName,
-  };
-  await db.putVote(vote);
-
-  // Start 2-minute timer
-  await createVoteTimer(scheduleName, voteId);
-
-  // DM each voter with Yes/No poll
-  const names = await resolveNames(game.players);
-  const submitterName = names.get(userId) || userId;
-  const bad = invalid_words.map((w) => `*${w}*`).join(", ");
-
-  for (const voterId of voters) {
-    try {
-      const result = await dmUser(voterId, {
-        text: `Word vote: ${invalid_words.join(", ")}`,
-        blocks: [
-          {
-            type: "section",
-            text: { type: "mrkdwn", text: `🗳️ *${submitterName}* played ${bad} — is it a real word?\n\nYou have 2 minutes to vote.` },
-          },
-          {
-            type: "actions",
-            elements: [
-              {
-                type: "button",
-                action_id: "qbim_vote_yes",
-                text: { type: "plain_text", text: "✅ Yes", emoji: true },
-                value: voteId,
-                style: "primary",
-              },
-              {
-                type: "button",
-                action_id: "qbim_vote_no",
-                text: { type: "plain_text", text: "❌ No", emoji: true },
-                value: voteId,
-                style: "danger",
-              },
-            ],
-          },
-        ],
-      });
-      vote.poll_messages[voterId] = { channel: result.channel, ts: result.ts };
-    } catch (err) {
-      console.warn("Failed to DM voter:", voterId, err.message);
-    }
-  }
-
-  // Save poll message refs
-  await db.putVote(vote);
 
   // Update the submitter's modal to "waiting" state
   try {

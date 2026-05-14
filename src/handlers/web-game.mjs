@@ -4,7 +4,11 @@
  *
  *   GET  /games/me        → round info for the authenticated user vs the live game
  *   POST /games/join      → join the live game
+ *   POST /games/mulligan  → take a mulligan
+ *   POST /games/drop      → leave the current game
+ *   POST /games/finish    → host ends the game early (final standings + COMPLETE)
  *   POST /scores          → submit a hand score (with optional `chosen` for multi-option flow)
+ *   POST /votes/start     → start a vote on dictionary-rejected words
  *
  * All require a Bearer JWT issued by /auth/slack/callback.
  */
@@ -13,7 +17,9 @@ import { verifyJwt } from "../lib/jwt.mjs";
 import { getScoreOptions } from "../lib/cards.mjs";
 import { validateWords } from "../lib/dictionary.mjs";
 import { findCurrentRound } from "../lib/home.mjs";
-import { invokeScoreWorker } from "./score-entry.mjs";
+import { invokeScoreWorker, finalizeGame } from "./score-entry.mjs";
+import { deleteQuicklerTimer } from "../lib/quickler.mjs";
+import { startWordVote } from "../lib/vote.mjs";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -32,7 +38,10 @@ export async function handleWebGameRequest(event) {
     if (method === "GET" && path === "/games/me") return await getMe(userId);
     if (method === "POST" && path === "/games/join") return await joinLive(userId);
     if (method === "POST" && path === "/games/mulligan") return await takeMulligan(userId, event);
+    if (method === "POST" && path === "/games/drop") return await dropFromGame(userId, event);
+    if (method === "POST" && path === "/games/finish") return await finishGameEarly(userId, event);
     if (method === "POST" && path === "/scores") return await submitScore(userId, event);
+    if (method === "POST" && path === "/votes/start") return await startVote(userId, event);
 
     return jsonResp(404, { error: "Not found" });
   } catch (err) {
@@ -101,6 +110,93 @@ async function joinLive(userId) {
   const scores = await db.getScoresForGame(game.game_id);
   const round = findCurrentRound(scores, userId, refreshed);
   return jsonResp(200, { game: refreshed, scores, round, joined: true });
+}
+
+async function dropFromGame(userId, event) {
+  let body;
+  try { body = JSON.parse(event.body || "{}"); } catch { return jsonResp(400, { error: "Invalid JSON" }); }
+  const { game_id } = body;
+  if (!game_id) return jsonResp(400, { error: "game_id required" });
+
+  const game = await db.getGame(game_id);
+  if (!game) return jsonResp(404, { error: "Game not found" });
+  if (!game.players.includes(userId)) return jsonResp(400, { error: "You're not in this game" });
+
+  // If dropping closes out the active Quickler hand, clean up the timer first.
+  if (game.quickler_timer_schedule_name) {
+    const tHand = game.quickler_timer_hand;
+    const handScores = await db.getScoresForGameHand(game_id, tHand);
+    const startHands = game.player_start_hands || {};
+    const eligible = game.players.filter((pid) => pid !== userId && (startHands[pid] || 3) <= tHand);
+    const submitted = handScores.filter((s) => s.player_slack_id !== userId);
+    if (submitted.length >= eligible.length) {
+      try { await deleteQuicklerTimer(game.quickler_timer_schedule_name); } catch (err) { console.warn("Timer cleanup:", err.message); }
+      await db.updateGameAttr(game_id, { quickler_timer_started_at: null, quickler_timer_hand: null, quickler_timer_schedule_name: null });
+    }
+  }
+
+  await db.removePlayerFromGame(game_id, userId);
+  const updated = await db.getGame(game_id);
+
+  if (!updated.players || updated.players.length === 0) {
+    if (updated.quickler_timer_schedule_name) {
+      try { await deleteQuicklerTimer(updated.quickler_timer_schedule_name); } catch (err) { console.warn("Timer cleanup:", err.message); }
+    }
+    await db.updateGameStatus(game_id, "COMPLETE", { completed_at: new Date().toISOString() });
+  } else {
+    // Award stars on any hands that just became complete (one less eligible player)
+    const scores = await db.getScoresForGame(game_id);
+    const startHands = updated.player_start_hands || {};
+    for (let h = 3; h <= 10; h++) {
+      const eligible = updated.players.filter((pid) => (startHands[pid] || 3) <= h);
+      const handScores = scores.filter((s) => s.hand === h);
+      const allZeroStars = handScores.every((s) => (s.stars || 0) === 0);
+      if (handScores.length >= eligible.length && handScores.length > 0 && allZeroStars) {
+        const { autoAwardStars } = await import("./score-entry.mjs");
+        await autoAwardStars(updated, h, handScores, true);
+      }
+    }
+  }
+
+  return jsonResp(200, { dropped: true });
+}
+
+async function finishGameEarly(userId, event) {
+  let body;
+  try { body = JSON.parse(event.body || "{}"); } catch { return jsonResp(400, { error: "Invalid JSON" }); }
+  const { game_id } = body;
+  if (!game_id) return jsonResp(400, { error: "game_id required" });
+
+  const game = await db.getGame(game_id);
+  if (!game) return jsonResp(404, { error: "Game not found" });
+  if (game.host_slack_id !== userId) return jsonResp(403, { error: "Only the host can end the game" });
+  if (game.status === "COMPLETE") return jsonResp(400, { error: "Game already complete" });
+
+  if (game.quickler_timer_schedule_name) {
+    try { await deleteQuicklerTimer(game.quickler_timer_schedule_name); } catch (err) { console.warn("Timer cleanup:", err.message); }
+  }
+
+  // finalizeGame handles status→COMPLETE, final-leaderboard DM, stats update, home refresh
+  await finalizeGame(game_id);
+  return jsonResp(200, { finished: true });
+}
+
+async function startVote(userId, event) {
+  let body;
+  try { body = JSON.parse(event.body || "{}"); } catch { return jsonResp(400, { error: "Invalid JSON" }); }
+  const { game_id, hand, words, invalid_words, button_pressed_at } = body;
+  if (!game_id || !Number.isInteger(hand)) return jsonResp(400, { error: "game_id and hand required" });
+
+  const game = await db.getGame(game_id);
+  if (!game) return jsonResp(404, { error: "Game not found" });
+  if (!game.players.includes(userId)) return jsonResp(403, { error: "Not in this game" });
+
+  try {
+    const vote = await startWordVote({ userId, game_id, hand, words, invalid_words, button_pressed_at });
+    return jsonResp(200, { vote_id: vote.vote_id, voters: vote.voters });
+  } catch (err) {
+    return jsonResp(400, { error: err.message });
+  }
 }
 
 async function takeMulligan(userId, event) {

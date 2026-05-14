@@ -16,6 +16,68 @@ import { getScoreOptions } from "./cards.mjs";
 
 const scheduler = new SchedulerClient({});
 
+// ── Start a vote — shared by Slack handleVoteWord and web POST /votes/start ─
+
+/**
+ * Create a vote record, schedule the 2-minute timer, and DM all other players
+ * the Yes/No poll. Returns the persisted vote (with poll_messages populated).
+ * Throws on invalid inputs / no voters.
+ */
+export async function startWordVote({ userId, game_id, hand, words, invalid_words, chosen, button_pressed_at }) {
+  if (!Array.isArray(invalid_words) || invalid_words.length === 0) {
+    throw new Error("No rejected words to vote on");
+  }
+  const game = await db.getGame(game_id);
+  if (!game) throw new Error("Game not found");
+  const voters = game.players.filter((pid) => pid !== userId);
+  if (voters.length === 0) throw new Error("No other players to vote");
+
+  const voteId = `vote-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const scheduleName = `qbim-vote-${voteId}`.replace(/[^a-zA-Z0-9_-]/g, "-");
+
+  let resolvedChosen = chosen;
+  if (!resolvedChosen) {
+    resolvedChosen = computeChosen(words, hand, await db.getMulliganCount(game_id, userId, hand));
+  }
+
+  const vote = {
+    vote_id: voteId, game_id, hand,
+    submitter: userId, words, invalid_words,
+    chosen: resolvedChosen,
+    button_pressed_at,
+    voters, votes: {}, poll_messages: {},
+    status: "open",
+    created_at: new Date().toISOString(),
+    schedule_name: scheduleName,
+  };
+  await db.putVote(vote);
+  await createVoteTimer(scheduleName, voteId);
+
+  const bad = invalid_words.map((w) => `*${w}*`).join(", ");
+  for (const voterId of voters) {
+    try {
+      const result = await dmUser(voterId, {
+        text: `Word vote: ${invalid_words.join(", ")}`,
+        blocks: [
+          { type: "section", text: { type: "mrkdwn", text: `🗳️ <@${userId}> played ${bad} — is it a real word?\n\nYou have 2 minutes to vote.` } },
+          {
+            type: "actions",
+            elements: [
+              { type: "button", action_id: "qbim_vote_yes", text: { type: "plain_text", text: "✅ Yes", emoji: true }, value: voteId, style: "primary" },
+              { type: "button", action_id: "qbim_vote_no",  text: { type: "plain_text", text: "❌ No",  emoji: true }, value: voteId, style: "danger"  },
+            ],
+          },
+        ],
+      });
+      vote.poll_messages[voterId] = { channel: result.channel, ts: result.ts };
+    } catch (err) {
+      console.warn("Failed to DM voter:", voterId, err.message);
+    }
+  }
+  await db.putVote(vote);
+  return vote;
+}
+
 // ── EventBridge Scheduler helpers ─────────────────────
 
 export async function createVoteTimer(scheduleName, voteId) {
