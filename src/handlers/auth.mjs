@@ -42,7 +42,6 @@ async function slackLogin(event) {
     client_id: process.env.SLACK_CLIENT_ID,
     state,
     redirect_uri: redirectUri(event),
-    prompt: "login",
   });
   if (process.env.SLACK_TEAM_ID) params.set("team", process.env.SLACK_TEAM_ID);
   return {
