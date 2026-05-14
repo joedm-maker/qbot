@@ -13,7 +13,7 @@ import { verifyJwt } from "../lib/jwt.mjs";
 import { getScoreOptions } from "../lib/cards.mjs";
 import { validateWords } from "../lib/dictionary.mjs";
 import { findCurrentRound } from "../lib/home.mjs";
-import { saveScore } from "./score-entry.mjs";
+import { invokeScoreWorker } from "./score-entry.mjs";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -121,10 +121,16 @@ async function submitScore(userId, event) {
 
   const wordsInput = (words || "").trim();
 
-  // Empty submission = 0 points (matches Slack behavior; deliberate blank rule)
+  // Empty submission = 0 points (matches Slack behavior; deliberate blank rule).
+  // Fire-and-forget the worker so the web caller doesn't wait for the Slack
+  // home-tab fanout — polling /games/me catches the saved state within ~2s.
   if (!wordsInput) {
-    const slackResp = await saveScore(userId, game_id, hand, "", { score: 0, cards: 0, breakdown: "—" }, button_pressed_at);
-    return translateSaveResponse(slackResp);
+    await invokeScoreWorker({
+      mode: "regular", userId, game_id, hand, wordsInput: "",
+      chosen: { score: 0, cards: 0, breakdown: "—" },
+      buttonPressedAt: button_pressed_at, validated: true,
+    });
+    return jsonResp(200, { status: "submitted", raw_score: 0, breakdown: "—", words: "" });
   }
 
   const mulligans = await db.getMulliganCount(game_id, userId, hand);
@@ -141,7 +147,7 @@ async function submitScore(userId, event) {
     return jsonResp(400, { error: `Too many cards for Hand ${hand}${mulligans > 0 ? ` with ${mulligans} mulligan${mulligans > 1 ? "s" : ""}` : ""} (max ${maxCards} cards).` });
   }
 
-  // Dictionary validation
+  // Dictionary validation — sync so the user gets an inline error before commit
   const dictCheck = await validateWords(wordsInput);
   if (dictCheck.invalid.length) {
     return jsonResp(200, {
@@ -156,22 +162,15 @@ async function submitScore(userId, event) {
   }
 
   const chosenOption = chosen || options[0];
-  const slackResp = await saveScore(userId, game_id, hand, wordsInput, chosenOption, button_pressed_at);
-  return translateSaveResponse(slackResp, chosenOption);
-}
-
-function translateSaveResponse(slackResp, chosen) {
-  try {
-    const body = JSON.parse(slackResp.body || "{}");
-    if (body.response_action === "errors") {
-      const msg = Object.values(body.errors || {})[0] || "Validation error";
-      return jsonResp(400, { error: msg });
-    }
-  } catch { /* fall through to success */ }
+  await invokeScoreWorker({
+    mode: "regular", userId, game_id, hand, wordsInput,
+    chosen: chosenOption, buttonPressedAt: button_pressed_at, validated: true,
+  });
   return jsonResp(200, {
-    status: "saved",
-    raw_score: chosen?.score ?? 0,
-    breakdown: chosen?.breakdown ?? "—",
+    status: "submitted",
+    raw_score: chosenOption.score,
+    breakdown: chosenOption.breakdown,
+    words: wordsInput,
   });
 }
 

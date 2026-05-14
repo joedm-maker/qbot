@@ -16,7 +16,7 @@ async function getLambda() {
   _lambda = new LambdaClient({});
   return _lambda;
 }
-async function invokeScoreWorker(payload) {
+export async function invokeScoreWorker(payload) {
   const functionName = process.env.SCORE_WORKER_FUNCTION_NAME;
   if (!functionName) {
     console.warn("SCORE_WORKER_FUNCTION_NAME not set; cannot invoke worker");
@@ -677,9 +677,7 @@ export async function autoAwardStars(game, hand, handScores, announce = true) {
     }
 
     // Refresh all players' home tabs so waiting players see the next hand
-    for (const pid of game.players) {
-      await renderHome(pid);
-    }
+    await Promise.all(game.players.map((pid) => renderHome(pid).catch((err) => console.warn("renderHome failed:", pid, err.message))));
   }
 }
 
@@ -699,9 +697,7 @@ export async function finalizeGame(gameId) {
   await updatePlayerStats(game, allScores);
 
   // Refresh all players' home tabs
-  for (const pid of game.players) {
-    await renderHome(pid);
-  }
+  await Promise.all(game.players.map((pid) => renderHome(pid).catch((err) => console.warn("renderHome failed:", pid, err.message))));
 }
 
 // ── Admin Functions ──────────────────────────────────────

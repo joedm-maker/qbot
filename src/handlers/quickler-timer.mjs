@@ -80,11 +80,5 @@ export async function handler(event) {
   await autoAwardStars(game, hand, handScores, true);
 
   // Refresh all players' home tabs
-  for (const pid of game.players) {
-    try {
-      await renderHome(pid);
-    } catch (err) {
-      console.warn("Failed to refresh home for:", pid, err.message);
-    }
-  }
+  await Promise.all(game.players.map((pid) => renderHome(pid).catch((err) => console.warn("Failed to refresh home for:", pid, err.message))));
 }
