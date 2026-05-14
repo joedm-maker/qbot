@@ -31,6 +31,7 @@ export async function handleWebGameRequest(event) {
 
     if (method === "GET" && path === "/games/me") return await getMe(userId);
     if (method === "POST" && path === "/games/join") return await joinLive(userId);
+    if (method === "POST" && path === "/games/mulligan") return await takeMulligan(userId, event);
     if (method === "POST" && path === "/scores") return await submitScore(userId, event);
 
     return jsonResp(404, { error: "Not found" });
@@ -100,6 +101,31 @@ async function joinLive(userId) {
   const scores = await db.getScoresForGame(game.game_id);
   const round = findCurrentRound(scores, userId, refreshed);
   return jsonResp(200, { game: refreshed, scores, round, joined: true });
+}
+
+async function takeMulligan(userId, event) {
+  let body;
+  try { body = JSON.parse(event.body || "{}"); } catch { return jsonResp(400, { error: "Invalid JSON" }); }
+  const { game_id, hand } = body;
+  if (!game_id || !Number.isInteger(hand) || hand < 3 || hand > 10) {
+    return jsonResp(400, { error: "game_id and hand (3-10) required" });
+  }
+  const game = await db.getGame(game_id);
+  if (!game) return jsonResp(404, { error: "Game not found" });
+  if (game.status !== "OPEN" && game.status !== "ACTIVE") {
+    return jsonResp(400, { error: `Game is ${game.status}` });
+  }
+  if (!game.players.includes(userId)) {
+    return jsonResp(403, { error: "Join the game first" });
+  }
+  const ok = await db.tryAddMulligan(game_id, userId, hand);
+  if (!ok) {
+    return jsonResp(400, { error: "Can't take another mulligan — would drop below the 2-card minimum (or you just took one)." });
+  }
+  const refreshed = await db.getGame(game_id);
+  const scores = await db.getScoresForGame(game_id);
+  const round = findCurrentRound(scores, userId, refreshed);
+  return jsonResp(200, { round });
 }
 
 async function submitScore(userId, event) {

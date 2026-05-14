@@ -243,6 +243,12 @@ Resources:
             RestApiId: !Ref QbimApi
             Path: /games/join
             Method: POST
+        GamesMulligan:
+          Type: Api
+          Properties:
+            RestApiId: !Ref QbimApi
+            Path: /games/mulligan
+            Method: POST
         Scores:
           Type: Api
           Properties:
