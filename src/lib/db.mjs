@@ -353,6 +353,26 @@ export async function upsertPlayer(slackId, displayName) {
   );
 }
 
+export async function upsertPlayerOAuthProfile(slackId, { displayName, email, avatarUrl }) {
+  const sets = [
+    "display_name = :dn",
+    "games_played = if_not_exists(games_played, :zero)",
+    "all_time_wins = if_not_exists(all_time_wins, :zero)",
+    "all_time_stars = if_not_exists(all_time_stars, :zero)",
+  ];
+  const values = { ":dn": displayName, ":zero": 0 };
+  if (email) { sets.push("email = :em"); values[":em"] = email; }
+  if (avatarUrl) { sets.push("avatar_url = :av"); values[":av"] = avatarUrl; }
+  await ddb.send(
+    new UpdateCommand({
+      TableName: PLAYERS_TABLE,
+      Key: { slack_id: slackId },
+      UpdateExpression: `SET ${sets.join(", ")}`,
+      ExpressionAttributeValues: values,
+    })
+  );
+}
+
 export async function setPlayerPreference(slackId, key, value) {
   await ddb.send(
     new UpdateCommand({

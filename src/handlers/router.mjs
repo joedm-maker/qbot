@@ -10,6 +10,7 @@ import { handler as gameFlowHandler } from "./game-flow.mjs";
 import { handler as scoreEntryHandler } from "./score-entry.mjs";
 import { handler as leaderboardHandler } from "./leaderboard.mjs";
 import { handleStatsRequest } from "./stats-api.mjs";
+import { handleAuthRequest } from "./auth.mjs";
 import { handler as autoqHandler } from "./autoq.mjs";
 
 // Action IDs handled by each module
@@ -68,6 +69,12 @@ export async function handler(event) {
     // Normalize path to strip stage prefix
     event.path = event.resource;
     return handleStatsRequest(event);
+  }
+
+  // Auth (Slack OAuth) — browser-driven, no Slack signature needed
+  if (event.httpMethod === "GET" && event.resource?.startsWith("/auth/")) {
+    event.path = event.resource;
+    return handleAuthRequest(event);
   }
 
   const { raw, parsed } = parseSlackBody(event.body, event.isBase64Encoded);

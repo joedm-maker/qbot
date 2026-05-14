@@ -22,6 +22,11 @@ Globals:
         DICTIONARY_TABLE: !Ref DictionaryTable
         VOTES_TABLE: !Ref VotesTable
         MW_API_KEY: !Ref MerriamWebsterApiKey
+        SLACK_CLIENT_ID: !Ref SlackClientId
+        SLACK_CLIENT_SECRET: !Ref SlackClientSecret
+        SLACK_TEAM_ID: !Ref SlackTeamId
+        SESSION_SECRET: !Ref SessionSecret
+        DASHBOARD_URL: !Ref DashboardUrl
 
 Parameters:
   SlackBotToken:
@@ -43,6 +48,25 @@ Parameters:
     Type: String
     NoEcho: true
     Description: Merriam-Webster Collegiate Dictionary API key
+  SlackClientId:
+    Type: String
+    Description: Slack app Client ID (Basic Information page) — used for Sign in with Slack
+  SlackClientSecret:
+    Type: String
+    NoEcho: true
+    Description: Slack app Client Secret — used for the OIDC token exchange
+  SlackTeamId:
+    Type: String
+    Default: ""
+    Description: Optional Slack workspace/team ID to restrict OAuth to (e.g. T0XXXXXXX)
+  SessionSecret:
+    Type: String
+    NoEcho: true
+    Description: HMAC secret (32+ bytes hex) used to sign web-app session JWTs
+  DashboardUrl:
+    Type: String
+    Default: https://qbim.designmaster.biz
+    Description: Origin of the React dashboard — OAuth callbacks redirect here
 
 Resources:
   # ---------- EventBridge Scheduler Role ----------
@@ -92,6 +116,10 @@ Resources:
     Properties:
       Name: qbim-api
       StageName: prod
+      Cors:
+        AllowOrigin: "'*'"
+        AllowHeaders: "'Content-Type,Authorization'"
+        AllowMethods: "'GET,POST,OPTIONS'"
 
   # ---------- Lambda Function (single router) ----------
   QbimBotFunction:
@@ -184,6 +212,24 @@ Resources:
           Properties:
             RestApiId: !Ref QbimApi
             Path: /stats/dictionary
+            Method: GET
+        AuthSlackLogin:
+          Type: Api
+          Properties:
+            RestApiId: !Ref QbimApi
+            Path: /auth/slack/login
+            Method: GET
+        AuthSlackCallback:
+          Type: Api
+          Properties:
+            RestApiId: !Ref QbimApi
+            Path: /auth/slack/callback
+            Method: GET
+        AuthMe:
+          Type: Api
+          Properties:
+            RestApiId: !Ref QbimApi
+            Path: /auth/me
             Method: GET
         Warmer:
           Type: Schedule
