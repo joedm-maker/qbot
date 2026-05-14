@@ -231,6 +231,24 @@ Resources:
             RestApiId: !Ref QbimApi
             Path: /auth/me
             Method: GET
+        GamesMe:
+          Type: Api
+          Properties:
+            RestApiId: !Ref QbimApi
+            Path: /games/me
+            Method: GET
+        GamesJoin:
+          Type: Api
+          Properties:
+            RestApiId: !Ref QbimApi
+            Path: /games/join
+            Method: POST
+        Scores:
+          Type: Api
+          Properties:
+            RestApiId: !Ref QbimApi
+            Path: /scores
+            Method: POST
         Warmer:
           Type: Schedule
           Properties:

@@ -11,6 +11,7 @@ import { handler as scoreEntryHandler } from "./score-entry.mjs";
 import { handler as leaderboardHandler } from "./leaderboard.mjs";
 import { handleStatsRequest } from "./stats-api.mjs";
 import { handleAuthRequest } from "./auth.mjs";
+import { handleWebGameRequest } from "./web-game.mjs";
 import { handler as autoqHandler } from "./autoq.mjs";
 
 // Action IDs handled by each module
@@ -75,6 +76,12 @@ export async function handler(event) {
   if (event.httpMethod === "GET" && event.resource?.startsWith("/auth/")) {
     event.path = event.resource;
     return handleAuthRequest(event);
+  }
+
+  // Web-app gameplay — Bearer JWT auth, no Slack signature
+  if (event.resource === "/games/me" || event.resource === "/games/join" || event.resource === "/scores") {
+    event.path = event.resource;
+    return handleWebGameRequest(event);
   }
 
   const { raw, parsed } = parseSlackBody(event.body, event.isBase64Encoded);
