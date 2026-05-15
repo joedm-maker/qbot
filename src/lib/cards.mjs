@@ -5,8 +5,7 @@
  * Words can be entered as "quiz" or "qu-i-z" (hyphens delineate cards).
  *
  * Game types:
- *   QBIM: hands 3–10 (8 hands)
- *   Quickler: hands 4–8 (5 hands)
+ *   QBIM, Quickler, AutoQ all use hands 3–10 (8 hands).
  *
  * Scoring notes:
  *   IN (7) = I (2) + N (5)  — same score, use whichever fits hand limit

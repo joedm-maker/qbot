@@ -256,7 +256,8 @@ export async function createNewGame(hostSlackId, gameType, deckType = "Physical"
   const maxGameNumber = await db.getMaxGameNumber();
   const gameNumber = maxGameNumber + 1;
 
-  const initialDeal = deckType === "Digital" ? dealFromPool([], 3).cards : null;
+  const firstHand = getHandRange(gameType)[0];
+  const initialDeal = deckType === "Digital" ? dealFromPool([], firstHand).cards : null;
   const game = {
     game_id: crypto.randomUUID(),
     game_date: today,
@@ -266,11 +267,11 @@ export async function createNewGame(hostSlackId, gameType, deckType = "Physical"
     game_number: gameNumber,
     host_slack_id: hostSlackId,
     players: [hostSlackId],
-    player_start_hands: { [hostSlackId]: 3 },
+    player_start_hands: { [hostSlackId]: firstHand },
     mulligans: {},
     dealers: [],
-    dealt_cards: initialDeal ? { [`${hostSlackId}#3`]: initialDeal } : {},
-    hand_seen_cards: initialDeal ? { [`${hostSlackId}#3`]: initialDeal } : {},
+    dealt_cards: initialDeal ? { [`${hostSlackId}#${firstHand}`]: initialDeal } : {},
+    hand_seen_cards: initialDeal ? { [`${hostSlackId}#${firstHand}`]: initialDeal } : {},
     created_at: new Date().toISOString(),
   };
 
