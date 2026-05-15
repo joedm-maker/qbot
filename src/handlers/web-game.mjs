@@ -17,7 +17,7 @@ import { verifyJwt } from "../lib/jwt.mjs";
 import { getScoreOptions } from "../lib/cards.mjs";
 import { validateWords } from "../lib/dictionary.mjs";
 import { findCurrentRound } from "../lib/home.mjs";
-import { dealForHand, filterOptionsAgainstDealt } from "../lib/autoq-deck.mjs";
+import { dealFromPool, filterOptionsAgainstDealt } from "../lib/autoq-deck.mjs";
 import { invokeScoreWorker, finalizeGame } from "./score-entry.mjs";
 import { createNewGame, findActiveGameForUser, notifyRegulars, postLobbyMessage } from "./game-flow.mjs";
 import { deleteQuicklerTimer } from "../lib/quickler.mjs";
@@ -111,7 +111,12 @@ async function joinLive(userId) {
 
   // Digital deck: deal cards for the joiner's current hand
   if (game.deck_type === "Digital") {
-    await db.setDealtCards(game.game_id, `${userId}#${startHand}`, dealForHand(1, startHand)[0]);
+    const seen = game.player_seen_cards?.[userId] || [];
+    const { cards, shortBy } = dealFromPool(seen, startHand);
+    if (shortBy > 0) {
+      return jsonResp(409, { error: `Deck depleted — only ${cards.length} card${cards.length === 1 ? "" : "s"} left, need ${startHand} for Hand ${startHand}.` });
+    }
+    await db.recordDeal(game.game_id, userId, startHand, cards);
   }
 
   const refreshed = await db.getGame(game.game_id);
@@ -247,11 +252,20 @@ async function takeMulligan(userId, event) {
   if (!ok) {
     return jsonResp(400, { error: "Can't take another mulligan — would drop below the 2-card minimum (or you just took one)." });
   }
-  // Digital deck: re-deal with one fewer card after each mulligan
+  // Digital deck: re-deal with one fewer card. The discarded hand is already
+  // in player_seen_cards (added when first dealt), so dealFromPool naturally
+  // excludes it; previous mulligan discards stay excluded too. The pool can
+  // be depleted across many mulligans — by design.
   if (game.deck_type === "Digital") {
     const mulligans = await db.getMulliganCount(game_id, userId, hand);
     const cardCount = hand - mulligans;
-    await db.setDealtCards(game_id, `${userId}#${hand}`, dealForHand(1, cardCount)[0]);
+    const refreshed = await db.getGame(game_id);
+    const seen = refreshed.player_seen_cards?.[userId] || [];
+    const { cards, shortBy } = dealFromPool(seen, cardCount);
+    if (shortBy > 0) {
+      return jsonResp(409, { error: `Deck depleted — only ${cards.length} card${cards.length === 1 ? "" : "s"} left, need ${cardCount}.` });
+    }
+    await db.recordDeal(game_id, userId, hand, cards);
   }
   const refreshed = await db.getGame(game_id);
   const scores = await db.getScoresForGame(game_id);

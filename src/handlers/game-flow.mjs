@@ -5,7 +5,7 @@ import * as db from "../lib/db.mjs";
 import * as blocks from "../lib/blocks.mjs";
 import { renderHome, resolveNames, aggregateScores } from "../lib/home.mjs";
 import { deleteQuicklerTimer } from "../lib/quickler.mjs";
-import { dealForHand } from "../lib/autoq-deck.mjs";
+import { dealFromPool } from "../lib/autoq-deck.mjs";
 
 export async function handler(event) {
   const { raw, parsed } = parseSlackBody(event.body, event.isBase64Encoded);
@@ -99,7 +99,18 @@ async function handleAction(payload) {
       const hand = Number(handStr);
       // Atomic debounce + cap check. Ignores duplicate clicks (Slack retries,
       // impatient double-taps) within the debounce window.
-      await db.tryAddMulligan(gameId, userId, hand);
+      const ok = await db.tryAddMulligan(gameId, userId, hand);
+      // Digital deck: re-deal with one fewer card, pulling from the player's
+      // remaining pool (118 - all cards they've seen).
+      if (ok) {
+        const g = await db.getGame(gameId);
+        if (g.deck_type === "Digital") {
+          const m = await db.getMulliganCount(gameId, userId, hand);
+          const seen = g.player_seen_cards?.[userId] || [];
+          const { cards } = dealFromPool(seen, hand - m);
+          await db.recordDeal(gameId, userId, hand, cards);
+        }
+      }
       await renderHome(userId);
       break;
     }
@@ -235,6 +246,7 @@ export async function createNewGame(hostSlackId, gameType, deckType = "Physical"
   const maxGameNumber = await db.getMaxGameNumber();
   const gameNumber = maxGameNumber + 1;
 
+  const initialDeal = deckType === "Digital" ? dealFromPool([], 3).cards : null;
   const game = {
     game_id: crypto.randomUUID(),
     game_date: today,
@@ -247,7 +259,8 @@ export async function createNewGame(hostSlackId, gameType, deckType = "Physical"
     player_start_hands: { [hostSlackId]: 3 },
     mulligans: {},
     dealers: [],
-    dealt_cards: deckType === "Digital" ? { [`${hostSlackId}#3`]: dealForHand(1, 3)[0] } : {},
+    dealt_cards: initialDeal ? { [`${hostSlackId}#3`]: initialDeal } : {},
+    player_seen_cards: initialDeal ? { [hostSlackId]: initialDeal } : {},
     created_at: new Date().toISOString(),
   };
 
@@ -295,7 +308,9 @@ async function joinGame(gameId, slackId) {
 
   // Digital deck: deal the joiner cards for whichever hand they're starting at.
   if (game.deck_type === "Digital") {
-    await db.setDealtCards(gameId, `${slackId}#${startHand}`, dealForHand(1, startHand)[0]);
+    const seen = game.player_seen_cards?.[slackId] || [];
+    const { cards } = dealFromPool(seen, startHand);
+    await db.recordDeal(gameId, slackId, startHand, cards);
   }
 
   const info = await slack().users.info({ user: slackId });

@@ -675,15 +675,20 @@ export async function autoAwardStars(game, hand, handScores, announce = true) {
         });
       }
     } else if (game.deck_type === "Digital") {
-      // Digital deck: deal next-hand cards for every eligible player so they
-      // can see their hand immediately when the round advances.
-      const { dealForHand } = await import("../lib/autoq-deck.mjs");
+      // Digital deck: deal next-hand cards for every eligible player from
+      // their own remaining pool (118 - what they've already seen). Pool can
+      // deplete across hands and mulligans — by design.
+      const { dealFromPool } = await import("../lib/autoq-deck.mjs");
       const nextHand = hand + 1;
       const startHands = game.player_start_hands || {};
       const nextEligible = game.players.filter((pid) => (startHands[pid] || gameHands[0]) <= nextHand);
-      const hands = dealForHand(nextEligible.length, nextHand);
-      for (let i = 0; i < nextEligible.length; i++) {
-        await db.setDealtCards(game.game_id, `${nextEligible[i]}#${nextHand}`, hands[i]);
+      const freshGame = await db.getGame(game.game_id);
+      for (const pid of nextEligible) {
+        const seen = freshGame.player_seen_cards?.[pid] || [];
+        const { cards } = dealFromPool(seen, nextHand);
+        // If shortBy > 0, the player simply gets fewer cards (we still record
+        // what we could deal so the UI shows what they have).
+        await db.recordDeal(game.game_id, pid, nextHand, cards);
       }
     }
 

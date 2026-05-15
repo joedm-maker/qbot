@@ -44,6 +44,33 @@ export function dealForHand(playerCount, handSize) {
 }
 
 /**
+ * Multiset subtract — return a copy of `deck` with one occurrence of each
+ * element in `removed` taken out.
+ */
+function multisetSubtract(deck, removed) {
+  const result = [...deck];
+  for (const card of removed) {
+    const idx = result.indexOf(card);
+    if (idx >= 0) result.splice(idx, 1);
+  }
+  return result;
+}
+
+/**
+ * Deal `count` cards from the 118-card deck minus the player's `seenCards`
+ * (every card they've already been dealt this game — initial deals + previous
+ * mulligan discards). Returns `{ cards, shortBy }`; `shortBy > 0` means the
+ * pool has been depleted and the deal can't be filled.
+ */
+export function dealFromPool(seenCards, count) {
+  const pool = multisetSubtract(QUIDDLER_DECK, seenCards || []);
+  if (pool.length < count) {
+    return { cards: pool.slice(0), shortBy: count - pool.length };
+  }
+  return { cards: shuffleDeck(pool).slice(0, count), shortBy: 0 };
+}
+
+/**
  * Check whether `usedCards` is a valid multiset subset of `dealtCards`.
  * Both are arrays of card strings (e.g. ["QU", "I", "Z"]).
  */

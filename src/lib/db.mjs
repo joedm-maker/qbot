@@ -487,16 +487,22 @@ export async function getRegularPlayers(minGames) {
 
 // ── Game Attribute Update ───────────────────────────────
 
-export async function setDealtCards(gameId, playerHandKey, cards) {
-  // Read-modify-write so we never have to worry about the map not existing yet.
+/**
+ * Record a deal for a player on a given hand: set the per-hand dealt cards
+ * AND extend the player's lifetime seen-set so future deals can avoid them.
+ * Read-modify-write to handle map-init for fresh games.
+ */
+export async function recordDeal(gameId, slackId, hand, cards) {
   const game = await getGame(gameId);
   const dealt = game?.dealt_cards || {};
-  dealt[playerHandKey] = cards;
+  const seen = game?.player_seen_cards || {};
+  dealt[`${slackId}#${hand}`] = cards;
+  seen[slackId] = [...(seen[slackId] || []), ...cards];
   await ddb.send(new UpdateCommand({
     TableName: GAMES_TABLE,
     Key: { game_id: gameId },
-    UpdateExpression: "SET dealt_cards = :d",
-    ExpressionAttributeValues: { ":d": dealt },
+    UpdateExpression: "SET dealt_cards = :d, player_seen_cards = :s",
+    ExpressionAttributeValues: { ":d": dealt, ":s": seen },
   }));
 }
 
