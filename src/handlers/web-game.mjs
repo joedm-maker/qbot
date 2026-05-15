@@ -343,11 +343,10 @@ async function submitScore(userId, event) {
     });
   }
 
-  // Multiple readings — caller must pick one
-  if (options.length > 1 && !chosen) {
-    return jsonResp(200, { status: "choice_required", options });
-  }
-
+  // Multiple readings: digraphs are never worth more than the corresponding
+  // individual letters, so options[0] (sorted by score desc) is always the
+  // score-optimal pick. The player can force a specific digraph via hyphen
+  // syntax (e.g. "qu-i-z") which collapses options to a single reading.
   const chosenOption = chosen || options[0];
   await invokeScoreWorker({
     mode: "regular", userId, game_id, hand, wordsInput,
