@@ -649,20 +649,28 @@ export function findCurrentRound(scores, userId, game) {
       // Find players who haven't submitted yet
       const submittedIds = new Set(handScores.map((s) => s.player_slack_id));
       const missingPlayerIds = eligible.filter((pid) => !submittedIds.has(pid));
+      const isDigital = game.deck_type === "Digital";
+      const handSeen = game.hand_seen_cards?.[`${userId}#${h}`] || [];
+      const poolRemaining = isDigital ? 118 - handSeen.length : null;
+      const maxCards = h - mulligans;
+      const nextMulliganSize = maxCards - 1;
+      const canMulligan = nextMulliganSize >= 2 && (!isDigital || poolRemaining >= nextMulliganSize);
       return {
         hand: h,
         canSubmit: !myScore,
         myWords: myScore?.words || null,
         myScore: myScore?.raw_score || null,
         mulligans,
-        maxCards: h - mulligans,
+        maxCards,
         missingPlayerIds,
         dealtCards: game.dealt_cards?.[`${userId}#${h}`] || null,
         deckType: game.deck_type || "Physical",
+        poolRemaining,
+        canMulligan,
       };
     }
   }
-  return { hand: null, canSubmit: false, myWords: null, myScore: null, dealtCards: null, deckType: game.deck_type || "Physical" };
+  return { hand: null, canSubmit: false, myWords: null, myScore: null, dealtCards: null, deckType: game.deck_type || "Physical", poolRemaining: null, canMulligan: false };
 }
 
 /**

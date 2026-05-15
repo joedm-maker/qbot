@@ -488,20 +488,22 @@ export async function getRegularPlayers(minGames) {
 // ── Game Attribute Update ───────────────────────────────
 
 /**
- * Record a deal for a player on a given hand: set the per-hand dealt cards
- * AND extend the player's lifetime seen-set so future deals can avoid them.
- * Read-modify-write to handle map-init for fresh games.
+ * Record a deal for a player on a given hand. Updates dealt_cards (what
+ * they currently hold) and extends hand_seen_cards (everything they've
+ * been dealt this hand — initial + every mulligan discard). The seen set
+ * is per-hand, so a new hand starts fresh from the full 118-card deck.
  */
 export async function recordDeal(gameId, slackId, hand, cards) {
   const game = await getGame(gameId);
   const dealt = game?.dealt_cards || {};
-  const seen = game?.player_seen_cards || {};
-  dealt[`${slackId}#${hand}`] = cards;
-  seen[slackId] = [...(seen[slackId] || []), ...cards];
+  const seen = game?.hand_seen_cards || {};
+  const key = `${slackId}#${hand}`;
+  dealt[key] = cards;
+  seen[key] = [...(seen[key] || []), ...cards];
   await ddb.send(new UpdateCommand({
     TableName: GAMES_TABLE,
     Key: { game_id: gameId },
-    UpdateExpression: "SET dealt_cards = :d, player_seen_cards = :s",
+    UpdateExpression: "SET dealt_cards = :d, hand_seen_cards = :s",
     ExpressionAttributeValues: { ":d": dealt, ":s": seen },
   }));
 }

@@ -97,19 +97,29 @@ async function handleAction(payload) {
     case "qbim_mulligan": {
       const [gameId, handStr] = action.value.split("|");
       const hand = Number(handStr);
+      const g = await db.getGame(gameId);
+      // Digital pool check BEFORE recording the mulligan — if the deck is
+      // too depleted to deal the new (smaller) hand, reject and don't count
+      // the mulligan against the player.
+      if (g.deck_type === "Digital") {
+        const mPrior = await db.getMulliganCount(gameId, userId, hand);
+        const target = hand - mPrior - 1; // size of the hand AFTER this mulligan
+        const seen = g.hand_seen_cards?.[`${userId}#${hand}`] || [];
+        const poolRemaining = 118 - seen.length;
+        if (poolRemaining < target) {
+          await renderHome(userId);
+          break; // silent reject — UI re-renders with the button disabled
+        }
+      }
       // Atomic debounce + cap check. Ignores duplicate clicks (Slack retries,
       // impatient double-taps) within the debounce window.
       const ok = await db.tryAddMulligan(gameId, userId, hand);
-      // Digital deck: re-deal with one fewer card, pulling from the player's
-      // remaining pool (118 - all cards they've seen).
-      if (ok) {
-        const g = await db.getGame(gameId);
-        if (g.deck_type === "Digital") {
-          const m = await db.getMulliganCount(gameId, userId, hand);
-          const seen = g.player_seen_cards?.[userId] || [];
-          const { cards } = dealFromPool(seen, hand - m);
-          await db.recordDeal(gameId, userId, hand, cards);
-        }
+      if (ok && g.deck_type === "Digital") {
+        const m = await db.getMulliganCount(gameId, userId, hand);
+        const refreshed = await db.getGame(gameId);
+        const seen = refreshed.hand_seen_cards?.[`${userId}#${hand}`] || [];
+        const { cards } = dealFromPool(seen, hand - m);
+        await db.recordDeal(gameId, userId, hand, cards);
       }
       await renderHome(userId);
       break;
@@ -260,7 +270,7 @@ export async function createNewGame(hostSlackId, gameType, deckType = "Physical"
     mulligans: {},
     dealers: [],
     dealt_cards: initialDeal ? { [`${hostSlackId}#3`]: initialDeal } : {},
-    player_seen_cards: initialDeal ? { [hostSlackId]: initialDeal } : {},
+    hand_seen_cards: initialDeal ? { [`${hostSlackId}#3`]: initialDeal } : {},
     created_at: new Date().toISOString(),
   };
 
@@ -306,10 +316,10 @@ async function joinGame(gameId, slackId) {
   await db.addPlayerToGame(gameId, slackId);
   await db.setPlayerStartHand(gameId, slackId, startHand);
 
-  // Digital deck: deal the joiner cards for whichever hand they're starting at.
+  // Digital deck: deal the joiner cards for whichever hand they're starting
+  // at (fresh deck — per-hand seen set, so no prior history applies).
   if (game.deck_type === "Digital") {
-    const seen = game.player_seen_cards?.[slackId] || [];
-    const { cards } = dealFromPool(seen, startHand);
+    const { cards } = dealFromPool([], startHand);
     await db.recordDeal(gameId, slackId, startHand, cards);
   }
 

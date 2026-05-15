@@ -109,13 +109,10 @@ async function joinLive(userId) {
   await db.addPlayerToGame(game.game_id, userId);
   await db.setPlayerStartHand(game.game_id, userId, startHand);
 
-  // Digital deck: deal cards for the joiner's current hand
+  // Digital deck: deal cards for the joiner's current hand from a fresh
+  // shuffled deck (per-hand seen set — late joiners start clean).
   if (game.deck_type === "Digital") {
-    const seen = game.player_seen_cards?.[userId] || [];
-    const { cards, shortBy } = dealFromPool(seen, startHand);
-    if (shortBy > 0) {
-      return jsonResp(409, { error: `Deck depleted — only ${cards.length} card${cards.length === 1 ? "" : "s"} left, need ${startHand} for Hand ${startHand}.` });
-    }
+    const { cards } = dealFromPool([], startHand);
     await db.recordDeal(game.game_id, userId, startHand, cards);
   }
 
@@ -248,23 +245,30 @@ async function takeMulligan(userId, event) {
   if (!game.players.includes(userId)) {
     return jsonResp(403, { error: "Join the game first" });
   }
+  // Digital deck: check pool BEFORE recording the mulligan. If the deck
+  // can't fund the new (smaller) hand, reject without counting the mulligan.
+  if (game.deck_type === "Digital") {
+    const mPrior = await db.getMulliganCount(game_id, userId, hand);
+    const target = hand - mPrior - 1;
+    const seen = game.hand_seen_cards?.[`${userId}#${hand}`] || [];
+    const poolRemaining = 118 - seen.length;
+    if (poolRemaining < target) {
+      return jsonResp(409, { error: `Deck depleted — only ${poolRemaining} card${poolRemaining === 1 ? "" : "s"} left, need ${target}. Mulligan not counted.` });
+    }
+  }
+
   const ok = await db.tryAddMulligan(game_id, userId, hand);
   if (!ok) {
     return jsonResp(400, { error: "Can't take another mulligan — would drop below the 2-card minimum (or you just took one)." });
   }
-  // Digital deck: re-deal with one fewer card. The discarded hand is already
-  // in player_seen_cards (added when first dealt), so dealFromPool naturally
-  // excludes it; previous mulligan discards stay excluded too. The pool can
-  // be depleted across many mulligans — by design.
+  // Digital deck: deal the new (smaller) hand from the pool. The discarded
+  // hand is in hand_seen_cards already and stays excluded.
   if (game.deck_type === "Digital") {
     const mulligans = await db.getMulliganCount(game_id, userId, hand);
     const cardCount = hand - mulligans;
     const refreshed = await db.getGame(game_id);
-    const seen = refreshed.player_seen_cards?.[userId] || [];
-    const { cards, shortBy } = dealFromPool(seen, cardCount);
-    if (shortBy > 0) {
-      return jsonResp(409, { error: `Deck depleted — only ${cards.length} card${cards.length === 1 ? "" : "s"} left, need ${cardCount}.` });
-    }
+    const seen = refreshed.hand_seen_cards?.[`${userId}#${hand}`] || [];
+    const { cards } = dealFromPool(seen, cardCount);
     await db.recordDeal(game_id, userId, hand, cards);
   }
   const refreshed = await db.getGame(game_id);
