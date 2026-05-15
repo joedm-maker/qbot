@@ -23,6 +23,17 @@ export function getHandRange(gameType) {
   return [3, 4, 5, 6, 7, 8, 9, 10];
 }
 
+/**
+ * How many cards to deal for a given hand. Quickler deals N+3 cards per
+ * hand — the extra 3 are "discards" the player doesn't need to score with.
+ * QBIM and AutoQ deal exactly N. Mulligans subtract from the dealt count
+ * (and from the playable count) one card at a time.
+ */
+export function dealSizeForHand(gameType, hand, mulligans = 0) {
+  const playable = hand - mulligans;
+  return playable + (gameType === "Quickler" ? 3 : 0);
+}
+
 const SUPERSCRIPT = { "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴", "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹" };
 
 function toSuperscript(n) {

@@ -14,7 +14,7 @@
  */
 import * as db from "../lib/db.mjs";
 import { verifyJwt } from "../lib/jwt.mjs";
-import { getScoreOptions } from "../lib/cards.mjs";
+import { getScoreOptions, dealSizeForHand } from "../lib/cards.mjs";
 import { validateWords } from "../lib/dictionary.mjs";
 import { findCurrentRound } from "../lib/home.mjs";
 import { dealFromPool, filterOptionsAgainstDealt } from "../lib/autoq-deck.mjs";
@@ -249,7 +249,7 @@ async function takeMulligan(userId, event) {
   // can't fund the new (smaller) hand, reject without counting the mulligan.
   if (game.deck_type === "Digital") {
     const mPrior = await db.getMulliganCount(game_id, userId, hand);
-    const target = hand - mPrior - 1;
+    const target = dealSizeForHand(game.game_type, hand, mPrior + 1);
     const seen = game.hand_seen_cards?.[`${userId}#${hand}`] || [];
     const poolRemaining = 118 - seen.length;
     if (poolRemaining < target) {
@@ -257,7 +257,7 @@ async function takeMulligan(userId, event) {
     }
   }
 
-  const ok = await db.tryAddMulligan(game_id, userId, hand);
+  const ok = await db.tryAddMulligan(game_id, userId, hand, dealSizeForHand(game.game_type, hand, 0) - 2);
   if (!ok) {
     return jsonResp(400, { error: "Can't take another mulligan — would drop below the 2-card minimum (or you just took one)." });
   }
@@ -265,7 +265,7 @@ async function takeMulligan(userId, event) {
   // hand is in hand_seen_cards already and stays excluded.
   if (game.deck_type === "Digital") {
     const mulligans = await db.getMulliganCount(game_id, userId, hand);
-    const cardCount = hand - mulligans;
+    const cardCount = dealSizeForHand(game.game_type, hand, mulligans);
     const refreshed = await db.getGame(game_id);
     const seen = refreshed.hand_seen_cards?.[`${userId}#${hand}`] || [];
     const { cards } = dealFromPool(seen, cardCount);
@@ -309,7 +309,7 @@ async function submitScore(userId, event) {
   }
 
   const mulligans = await db.getMulliganCount(game_id, userId, hand);
-  const maxCards = hand - mulligans;
+  const maxCards = dealSizeForHand(game.game_type, hand, mulligans);
 
   // Digital games filter options to those actually formable from the player's
   // dealt cards; Physical games fall back to the cards-count check.

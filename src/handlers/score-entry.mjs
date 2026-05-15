@@ -2,7 +2,7 @@ import { verifySlackSignature, parseSlackBody } from "../lib/verify.mjs";
 import { slack, CHANNEL, dmAllPlayers, dmUser } from "../lib/slack.mjs";
 import * as db from "../lib/db.mjs";
 import * as blocks from "../lib/blocks.mjs";
-import { getScoreOptions, getHandRange, formatWordsWithPoints, normalizeWords } from "../lib/cards.mjs";
+import { getScoreOptions, getHandRange, formatWordsWithPoints, normalizeWords, dealSizeForHand } from "../lib/cards.mjs";
 import { renderHome, resolveNames, aggregateScores, findCurrentRound, ADMIN_USER } from "../lib/home.mjs";
 import { createQuicklerTimer, deleteQuicklerTimer } from "../lib/quickler.mjs";
 import { validateWords } from "../lib/dictionary.mjs";
@@ -303,7 +303,8 @@ async function submitScore(payload) {
 
   // Check for mulligans — reduces max card count
   const mulligans = await db.getMulliganCount(game_id, userId, hand);
-  const maxCards = hand - mulligans;
+  const gameForMax = await db.getGame(game_id);
+  const maxCards = dealSizeForHand(gameForMax?.game_type, hand, mulligans);
 
   // Get all possible score options with adjusted card limit
   const { options, invalid, tooShort } = getScoreOptions(wordsInput, maxCards);
@@ -681,8 +682,9 @@ export async function autoAwardStars(game, hand, handScores, announce = true) {
       const nextHand = hand + 1;
       const startHands = game.player_start_hands || {};
       const nextEligible = game.players.filter((pid) => (startHands[pid] || gameHands[0]) <= nextHand);
+      const dealSize = dealSizeForHand(game.game_type, nextHand, 0);
       for (const pid of nextEligible) {
-        const { cards } = dealFromPool([], nextHand);
+        const { cards } = dealFromPool([], dealSize);
         await db.recordDeal(game.game_id, pid, nextHand, cards);
       }
     }
@@ -762,7 +764,8 @@ async function adminSaveEdit(payload) {
   await db.setMulliganCount(game_id, player_id, hand, newMulligans);
 
   // Calculate score from words (accounting for mulligans)
-  const maxCards = hand - newMulligans;
+  const gameForMax2 = await db.getGame(game_id);
+  const maxCards = dealSizeForHand(gameForMax2?.game_type, hand, newMulligans);
   const { options, invalid, tooShort } = getScoreOptions(wordsInput, maxCards);
   if (invalid.length) {
     return validationError(`Invalid cards: ${invalid.join(", ")}`);

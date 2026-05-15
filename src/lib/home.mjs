@@ -5,7 +5,7 @@
 import { slack, dmUser } from "./slack.mjs";
 import * as db from "./db.mjs";
 import * as blocks from "./blocks.mjs";
-import { getHandRange, CARD_VALUES, formatWordsWithPoints } from "./cards.mjs";
+import { getHandRange, CARD_VALUES, formatWordsWithPoints, dealSizeForHand } from "./cards.mjs";
 
 // ── Home Tab Rendering ─────────────────────────────────
 
@@ -652,7 +652,7 @@ export function findCurrentRound(scores, userId, game) {
       const isDigital = game.deck_type === "Digital";
       const handSeen = game.hand_seen_cards?.[`${userId}#${h}`] || [];
       const poolRemaining = isDigital ? 118 - handSeen.length : null;
-      const maxCards = h - mulligans;
+      const maxCards = dealSizeForHand(game.game_type, h, mulligans);
       const nextMulliganSize = maxCards - 1;
       const canMulligan = nextMulliganSize >= 2 && (!isDigital || poolRemaining >= nextMulliganSize);
       return {

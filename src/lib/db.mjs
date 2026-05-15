@@ -154,7 +154,14 @@ export async function addMulligan(gameId, playerId, hand) {
 // Atomic, debounced mulligan. Rejects if the cap is already reached OR the
 // previous click for this player+hand was within `debounceMs`. Returns the
 // outcome so the handler can stay simple.
-export async function tryAddMulligan(gameId, playerId, hand, debounceMs = 2000) {
+/**
+ * Atomically increment a player's mulligan count for a hand, with both a
+ * cap (so they can't drop below the 2-card word minimum) and a 2s debounce
+ * (to swallow Slack retries and double-taps). `cap` defaults to hand-2
+ * for QBIM-style games; Quickler callers pass hand+1 since the dealt hand
+ * starts at hand+3.
+ */
+export async function tryAddMulligan(gameId, playerId, hand, cap = hand - 2, debounceMs = 2000) {
   const key = `${playerId}#${hand}`;
   const now = Date.now();
   const cutoff = now - debounceMs;
@@ -183,7 +190,7 @@ export async function tryAddMulligan(gameId, playerId, hand, debounceMs = 2000) 
         ExpressionAttributeValues: {
           ":zero": 0,
           ":one": 1,
-          ":cap": hand - 2,
+          ":cap": cap,
           ":cutoff": cutoff,
           ":now": now,
         },
