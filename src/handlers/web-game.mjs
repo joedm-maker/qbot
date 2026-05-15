@@ -112,7 +112,8 @@ async function joinLive(userId) {
   // Digital deck: deal cards for the joiner's current hand from a fresh
   // shuffled deck (per-hand seen set — late joiners start clean).
   if (game.deck_type === "Digital") {
-    const { cards } = dealFromPool([], startHand);
+    const dealSize = dealSizeForHand(game.game_type, startHand, 0);
+    const { cards } = dealFromPool([], dealSize);
     await db.recordDeal(game.game_id, userId, startHand, cards);
   }
 
