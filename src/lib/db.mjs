@@ -487,6 +487,19 @@ export async function getRegularPlayers(minGames) {
 
 // ── Game Attribute Update ───────────────────────────────
 
+export async function setDealtCards(gameId, playerHandKey, cards) {
+  // Read-modify-write so we never have to worry about the map not existing yet.
+  const game = await getGame(gameId);
+  const dealt = game?.dealt_cards || {};
+  dealt[playerHandKey] = cards;
+  await ddb.send(new UpdateCommand({
+    TableName: GAMES_TABLE,
+    Key: { game_id: gameId },
+    UpdateExpression: "SET dealt_cards = :d",
+    ExpressionAttributeValues: { ":d": dealt },
+  }));
+}
+
 export async function updateGameAttr(gameId, attrs) {
   let updateExpr = "SET";
   const names = {};

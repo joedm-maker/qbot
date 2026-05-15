@@ -674,6 +674,17 @@ export async function autoAwardStars(game, hand, handScores, announce = true) {
           review_started_at: new Date().toISOString(),
         });
       }
+    } else if (game.deck_type === "Digital") {
+      // Digital deck: deal next-hand cards for every eligible player so they
+      // can see their hand immediately when the round advances.
+      const { dealForHand } = await import("../lib/autoq-deck.mjs");
+      const nextHand = hand + 1;
+      const startHands = game.player_start_hands || {};
+      const nextEligible = game.players.filter((pid) => (startHands[pid] || gameHands[0]) <= nextHand);
+      const hands = dealForHand(nextEligible.length, nextHand);
+      for (let i = 0; i < nextEligible.length; i++) {
+        await db.setDealtCards(game.game_id, `${nextEligible[i]}#${nextHand}`, hands[i]);
+      }
     }
 
     // Refresh all players' home tabs so waiting players see the next hand

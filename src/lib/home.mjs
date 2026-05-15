@@ -657,10 +657,12 @@ export function findCurrentRound(scores, userId, game) {
         mulligans,
         maxCards: h - mulligans,
         missingPlayerIds,
+        dealtCards: game.dealt_cards?.[`${userId}#${h}`] || null,
+        deckType: game.deck_type || "Physical",
       };
     }
   }
-  return { hand: null, canSubmit: false, myWords: null, myScore: null };
+  return { hand: null, canSubmit: false, myWords: null, myScore: null, dealtCards: null, deckType: game.deck_type || "Physical" };
 }
 
 /**

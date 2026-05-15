@@ -17,6 +17,7 @@ import { verifyJwt } from "../lib/jwt.mjs";
 import { getScoreOptions } from "../lib/cards.mjs";
 import { validateWords } from "../lib/dictionary.mjs";
 import { findCurrentRound } from "../lib/home.mjs";
+import { dealForHand, filterOptionsAgainstDealt } from "../lib/autoq-deck.mjs";
 import { invokeScoreWorker, finalizeGame } from "./score-entry.mjs";
 import { createNewGame, findActiveGameForUser, notifyRegulars, postLobbyMessage } from "./game-flow.mjs";
 import { deleteQuicklerTimer } from "../lib/quickler.mjs";
@@ -108,6 +109,11 @@ async function joinLive(userId) {
   await db.addPlayerToGame(game.game_id, userId);
   await db.setPlayerStartHand(game.game_id, userId, startHand);
 
+  // Digital deck: deal cards for the joiner's current hand
+  if (game.deck_type === "Digital") {
+    await db.setDealtCards(game.game_id, `${userId}#${startHand}`, dealForHand(1, startHand)[0]);
+  }
+
   const refreshed = await db.getGame(game.game_id);
   const scores = await db.getScoresForGame(game.game_id);
   const round = findCurrentRound(scores, userId, refreshed);
@@ -121,12 +127,13 @@ async function createGame(userId, event) {
   if (gameType !== "QBIM" && gameType !== "Quickler") {
     return jsonResp(400, { error: "game_type must be QBIM or Quickler" });
   }
+  const deckType = body.deck_type === "Digital" ? "Digital" : "Physical";
   // Match the Slack qbim_start_game_submit guard — one active game per user.
   const existing = await findActiveGameForUser(userId);
   if (existing) {
     return jsonResp(409, { error: `You already have an active game (#${existing.game_number}). Leave or end it first.` });
   }
-  const game = await createNewGame(userId, gameType);
+  const game = await createNewGame(userId, gameType, deckType);
   // Slack-side fanout (DM host + notify regulars) — best-effort, doesn't gate
   // the web response.
   postLobbyMessage(game).catch((err) => console.warn("postLobbyMessage:", err.message));
@@ -240,6 +247,12 @@ async function takeMulligan(userId, event) {
   if (!ok) {
     return jsonResp(400, { error: "Can't take another mulligan — would drop below the 2-card minimum (or you just took one)." });
   }
+  // Digital deck: re-deal with one fewer card after each mulligan
+  if (game.deck_type === "Digital") {
+    const mulligans = await db.getMulliganCount(game_id, userId, hand);
+    const cardCount = hand - mulligans;
+    await db.setDealtCards(game_id, `${userId}#${hand}`, dealForHand(1, cardCount)[0]);
+  }
   const refreshed = await db.getGame(game_id);
   const scores = await db.getScoresForGame(game_id);
   const round = findCurrentRound(scores, userId, refreshed);
@@ -279,7 +292,16 @@ async function submitScore(userId, event) {
 
   const mulligans = await db.getMulliganCount(game_id, userId, hand);
   const maxCards = hand - mulligans;
-  const { options, invalid, tooShort } = getScoreOptions(wordsInput, maxCards);
+
+  // Digital games filter options to those actually formable from the player's
+  // dealt cards; Physical games fall back to the cards-count check.
+  let options, invalid, tooShort;
+  const dealtCards = game.deck_type === "Digital" ? game.dealt_cards?.[`${userId}#${hand}`] : null;
+  if (dealtCards) {
+    ({ options, invalid, tooShort } = filterOptionsAgainstDealt(wordsInput, maxCards, dealtCards));
+  } else {
+    ({ options, invalid, tooShort } = getScoreOptions(wordsInput, maxCards));
+  }
 
   if (invalid.length) {
     return jsonResp(400, { error: `Invalid cards: ${invalid.join(", ")}` });
@@ -288,6 +310,9 @@ async function submitScore(userId, event) {
     return jsonResp(400, { error: `Every word must use at least 2 cards: ${tooShort.join(", ")}` });
   }
   if (!options.length) {
+    if (dealtCards) {
+      return jsonResp(400, { error: `Those words can't be formed from your dealt cards: ${dealtCards.join(" ")}` });
+    }
     return jsonResp(400, { error: `Too many cards for Hand ${hand}${mulligans > 0 ? ` with ${mulligans} mulligan${mulligans > 1 ? "s" : ""}` : ""} (max ${maxCards} cards).` });
   }
 

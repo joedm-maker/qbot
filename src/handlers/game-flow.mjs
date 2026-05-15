@@ -5,6 +5,7 @@ import * as db from "../lib/db.mjs";
 import * as blocks from "../lib/blocks.mjs";
 import { renderHome, resolveNames, aggregateScores } from "../lib/home.mjs";
 import { deleteQuicklerTimer } from "../lib/quickler.mjs";
+import { dealForHand } from "../lib/autoq-deck.mjs";
 
 export async function handler(event) {
   const { raw, parsed } = parseSlackBody(event.body, event.isBase64Encoded);
@@ -229,7 +230,7 @@ function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
 
-export async function createNewGame(hostSlackId, gameType) {
+export async function createNewGame(hostSlackId, gameType, deckType = "Physical") {
   const today = todayStr();
   const maxGameNumber = await db.getMaxGameNumber();
   const gameNumber = maxGameNumber + 1;
@@ -239,20 +240,29 @@ export async function createNewGame(hostSlackId, gameType) {
     game_date: today,
     status: "OPEN",
     game_type: gameType,
+    deck_type: deckType,
     game_number: gameNumber,
     host_slack_id: hostSlackId,
     players: [hostSlackId],
     player_start_hands: { [hostSlackId]: 3 },
     mulligans: {},
     dealers: [],
+    dealt_cards: deckType === "Digital" ? { [`${hostSlackId}#3`]: dealForHand(1, 3)[0] } : {},
     created_at: new Date().toISOString(),
   };
 
   await db.createGame(game);
 
-  // Upsert host in Players table
-  const info = await slack().users.info({ user: hostSlackId });
-  await db.upsertPlayer(hostSlackId, info.user.profile.display_name || info.user.real_name);
+  // Upsert host in Players table — Slack info call is best-effort (a host who
+  // started the game from /play may not have a Slack profile lookup available
+  // through this code path's bot token, but their record is already populated
+  // via the OAuth callback).
+  try {
+    const info = await slack().users.info({ user: hostSlackId });
+    await db.upsertPlayer(hostSlackId, info.user.profile.display_name || info.user.real_name);
+  } catch (err) {
+    console.warn("upsertPlayer from createNewGame skipped:", err.message);
+  }
 
   return game;
 }
@@ -282,6 +292,11 @@ async function joinGame(gameId, slackId) {
 
   await db.addPlayerToGame(gameId, slackId);
   await db.setPlayerStartHand(gameId, slackId, startHand);
+
+  // Digital deck: deal the joiner cards for whichever hand they're starting at.
+  if (game.deck_type === "Digital") {
+    await db.setDealtCards(gameId, `${slackId}#${startHand}`, dealForHand(1, startHand)[0]);
+  }
 
   const info = await slack().users.info({ user: slackId });
   await db.upsertPlayer(slackId, info.user.profile.display_name || info.user.real_name);
