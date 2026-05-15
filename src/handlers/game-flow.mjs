@@ -214,7 +214,7 @@ async function handleViewSubmission(payload) {
 
 // ── Core Logic ─────────────────────────────────────────
 
-async function findActiveGameForUser(userId) {
+export async function findActiveGameForUser(userId) {
   const today = todayStr();
   const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
   const todayGames = await db.getGamesByDate(today);
@@ -229,7 +229,7 @@ function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
 
-async function createNewGame(hostSlackId, gameType) {
+export async function createNewGame(hostSlackId, gameType) {
   const today = todayStr();
   const maxGameNumber = await db.getMaxGameNumber();
   const gameNumber = maxGameNumber + 1;
@@ -294,7 +294,7 @@ async function openStartGameModal(triggerId) {
   });
 }
 
-async function notifyRegulars(game) {
+export async function notifyRegulars(game) {
   try {
     const regulars = await db.getRegularPlayers(5);
     const names = await resolveNames(game.players);
@@ -311,7 +311,7 @@ async function notifyRegulars(game) {
   }
 }
 
-async function postLobbyMessage(game) {
+export async function postLobbyMessage(game) {
   const names = await resolveNames(game.players);
   const hostName = [...names.values()][0];
   const text = `${hostName} started a ${game.game_type} game! Open the QBot Home tab to join.`;

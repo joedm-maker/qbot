@@ -18,6 +18,7 @@ import { getScoreOptions } from "../lib/cards.mjs";
 import { validateWords } from "../lib/dictionary.mjs";
 import { findCurrentRound } from "../lib/home.mjs";
 import { invokeScoreWorker, finalizeGame } from "./score-entry.mjs";
+import { createNewGame, findActiveGameForUser, notifyRegulars, postLobbyMessage } from "./game-flow.mjs";
 import { deleteQuicklerTimer } from "../lib/quickler.mjs";
 import { startWordVote } from "../lib/vote.mjs";
 
@@ -36,6 +37,7 @@ export async function handleWebGameRequest(event) {
     const method = event.httpMethod;
 
     if (method === "GET" && path === "/games/me") return await getMe(userId);
+    if (method === "POST" && path === "/games/create") return await createGame(userId, event);
     if (method === "POST" && path === "/games/join") return await joinLive(userId);
     if (method === "POST" && path === "/games/mulligan") return await takeMulligan(userId, event);
     if (method === "POST" && path === "/games/drop") return await dropFromGame(userId, event);
@@ -110,6 +112,26 @@ async function joinLive(userId) {
   const scores = await db.getScoresForGame(game.game_id);
   const round = findCurrentRound(scores, userId, refreshed);
   return jsonResp(200, { game: refreshed, scores, round, joined: true });
+}
+
+async function createGame(userId, event) {
+  let body;
+  try { body = JSON.parse(event.body || "{}"); } catch { return jsonResp(400, { error: "Invalid JSON" }); }
+  const gameType = body.game_type;
+  if (gameType !== "QBIM" && gameType !== "Quickler") {
+    return jsonResp(400, { error: "game_type must be QBIM or Quickler" });
+  }
+  // Match the Slack qbim_start_game_submit guard — one active game per user.
+  const existing = await findActiveGameForUser(userId);
+  if (existing) {
+    return jsonResp(409, { error: `You already have an active game (#${existing.game_number}). Leave or end it first.` });
+  }
+  const game = await createNewGame(userId, gameType);
+  // Slack-side fanout (DM host + notify regulars) — best-effort, doesn't gate
+  // the web response.
+  postLobbyMessage(game).catch((err) => console.warn("postLobbyMessage:", err.message));
+  notifyRegulars(game).catch((err) => console.warn("notifyRegulars:", err.message));
+  return jsonResp(200, { game });
 }
 
 async function dropFromGame(userId, event) {

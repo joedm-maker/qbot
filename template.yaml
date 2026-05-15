@@ -237,6 +237,12 @@ Resources:
             RestApiId: !Ref QbimApi
             Path: /games/me
             Method: GET
+        GamesCreate:
+          Type: Api
+          Properties:
+            RestApiId: !Ref QbimApi
+            Path: /games/create
+            Method: POST
         GamesJoin:
           Type: Api
           Properties:
