@@ -195,6 +195,12 @@ Resources:
             RestApiId: !Ref QbimApi
             Path: /stats/scores
             Method: GET
+        StatsAutoqScores:
+          Type: Api
+          Properties:
+            RestApiId: !Ref QbimApi
+            Path: /stats/autoq-scores
+            Method: GET
         StatsLive:
           Type: Api
           Properties:

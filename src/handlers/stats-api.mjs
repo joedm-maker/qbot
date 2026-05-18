@@ -22,6 +22,7 @@ export async function handleStatsRequest(event) {
     if (path === "/stats/players") return await getPlayers();
     if (path === "/stats/games") return await getGames();
     if (path === "/stats/scores") return await getScores();
+    if (path === "/stats/autoq-scores") return await getAutoqScores();
     if (path === "/stats/live") return await getLiveGame();
     if (path === "/stats/validatewords") return await validateWordsEndpoint(event);
     if (path === "/stats/dictionary") return await getDictionary();
@@ -36,6 +37,32 @@ async function getScores() {
   const scores = await scanAll("qbim-scores");
   // Normalize player_id
   const normalized = scores.map((s) => ({ ...s, player_id: s.player_slack_id }));
+  return respond(normalized);
+}
+
+// AutoQ hand scores from the qbim-autoq table. AutoQ is solo against
+// historical-derived bots; only the human's plays are stored as items
+// with sk = "HAND#<n>". Returns the normalized rows so the dashboard's
+// word-stats can merge them with regular qbim-scores word data.
+// Words from AutoQ are dictionary-validated, so they're safe to fold
+// into the same pool.
+async function getAutoqScores() {
+  const items = await scanAll(process.env.AUTOQ_TABLE || "qbim-autoq");
+  const handItems = items.filter((it) => typeof it.sk === "string" && it.sk.startsWith("HAND#"));
+  const normalized = handItems.map((it) => ({
+    game_id: typeof it.pk === "string" ? it.pk.replace(/^autoq-/, "") : null,
+    player_id: it.player_id,
+    player_slack_id: it.player_id,
+    hand: it.hand,
+    raw_score: it.raw_score || 0,
+    stars: it.stars || 0,
+    words: it.words || "",
+    breakdown: it.breakdown || "",
+    word_count: it.word_count || 0,
+    longest_word_letters: it.longest_word_letters || 0,
+    submitted_at: it.submitted_at || null,
+    source: "autoq",
+  }));
   return respond(normalized);
 }
 
