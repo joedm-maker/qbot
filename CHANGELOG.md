@@ -1,3 +1,10 @@
+## v0.2.1 — 2026-05-18
+
+### Changed
+- **`POST /games/finish`** allows any player in the game to finalize once `review_started_at` is set — matches the Slack home-tab Finalize button (no host restriction during review). Mid-game early termination still requires the host. Paired with the dashboard's v0.3.2 Finalize button.
+
+---
+
 ## v0.2.0 — 2026-05-18
 
 ### Added
