@@ -1,3 +1,19 @@
+## v0.2.2 — 2026-05-18
+
+### Added
+- **`GET /stats/autoq-scores`** — returns AutoQ hand scores from the `qbim-autoq` table, normalized to the same shape as `/stats/scores` so the dashboard can fold them into its word-stats pool. AutoQ words are dictionary-validated server-side, so they're safe to mix in.
+- **`archive-partial-games.mjs`** — one-shot cleanup script. Flips `qbim-games` rows to `status=ARCHIVED` when status was `COMPLETE` but at least one rostered player is missing an H3-H10 score. Reversible (`prev_status` + `archived_at` preserved). Already-`COMPLETE` filters drop archived rows automatically.
+- **`delete-test-games.mjs`** — hard-deletes the 4 single-player abandoned test rows that were archived first.
+
+### Changed
+- **`/stats/games` filters to fully-complete games** and tags each with `complete_number` (1..N by creation order among fully-complete games). "Fully complete" = every player on the roster has a score for every hand H3-H10. `game_number` stays on the record as the storage-order id; `complete_number` is for display sequencing only. Partial games never surface in the dashboard, so the visible sequence has no gaps.
+
+### Data ops
+- 12 partial games flipped to `ARCHIVED` (`archive-partial-games.mjs --apply`).
+- 4 single-player test games hard-deleted along with 3 associated score rows (`delete-test-games.mjs --apply`).
+
+---
+
 ## v0.2.1 — 2026-05-18
 
 ### Changed
