@@ -6,7 +6,9 @@
  *   POST /games/join      → join the live game
  *   POST /games/mulligan  → take a mulligan
  *   POST /games/drop      → leave the current game
- *   POST /games/finish    → host ends the game early (final standings + COMPLETE)
+ *   POST /games/finish    → finalize the game. Host-only mid-game; any
+ *                          player once review_started_at is set (matches
+ *                          Slack home-tab "Finalize Game" behavior).
  *   POST /scores          → submit a hand score (with optional `chosen` for multi-option flow)
  *   POST /votes/start     → start a vote on dictionary-rejected words
  *
@@ -201,8 +203,16 @@ async function finishGameEarly(userId, event) {
 
   const game = await db.getGame(game_id);
   if (!game) return jsonResp(404, { error: "Game not found" });
-  if (game.host_slack_id !== userId) return jsonResp(403, { error: "Only the host can end the game" });
   if (game.status === "COMPLETE") return jsonResp(400, { error: "Game already complete" });
+  // In review state (all hands played, awaiting finalize), any player in the
+  // game can finalize — same as the Slack home-tab Finalize button. Outside
+  // review, only the host can end early.
+  const inReview = !!game.review_started_at;
+  if (inReview) {
+    if (!game.players.includes(userId)) return jsonResp(403, { error: "Not in this game" });
+  } else if (game.host_slack_id !== userId) {
+    return jsonResp(403, { error: "Only the host can end the game" });
+  }
 
   if (game.quickler_timer_schedule_name) {
     try { await deleteQuicklerTimer(game.quickler_timer_schedule_name); } catch (err) { console.warn("Timer cleanup:", err.message); }
