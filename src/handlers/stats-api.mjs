@@ -50,9 +50,31 @@ async function getGames() {
     scoresByGame[s.game_id].push(s);
   }
 
-  const completed = games
-    .filter((g) => g.status === "COMPLETE")
-    .sort((a, b) => (b.game_number || 0) - (a.game_number || 0));
+  // "Fully complete" = status COMPLETE AND every player on the roster
+  // submitted a score for every hand H3-H10. Partial games (someone
+  // dropped, host ended early) stay in storage but never surface here,
+  // so the dashboard's sequencing only counts true 8-hand games.
+  const ALL_HANDS = [3, 4, 5, 6, 7, 8, 9, 10];
+  const fullyComplete = games.filter((g) => {
+    if (g.status !== "COMPLETE") return false;
+    const gScores = scoresByGame[g.game_id] || [];
+    const handsByPlayer = {};
+    for (const s of gScores) {
+      if (!handsByPlayer[s.player_slack_id]) handsByPlayer[s.player_slack_id] = new Set();
+      handsByPlayer[s.player_slack_id].add(s.hand);
+    }
+    return (g.players || []).every((pid) => {
+      const hands = handsByPlayer[pid];
+      return hands && ALL_HANDS.every((h) => hands.has(h));
+    });
+  });
+
+  // Assign complete_number 1..N in creation order (ascending by game_number).
+  // game_number stays untouched on the record — it's the storage-order id.
+  const ascByCreation = [...fullyComplete].sort((a, b) => (a.game_number || 0) - (b.game_number || 0));
+  ascByCreation.forEach((g, idx) => { g.complete_number = idx + 1; });
+
+  const completed = ascByCreation.sort((a, b) => b.complete_number - a.complete_number);
 
   // Add winner if missing
   for (const g of completed) {
