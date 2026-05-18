@@ -56,14 +56,25 @@ qbim-bot/
     │   ├── game-flow.mjs        # Start/join/end game, mulligan, score toggle, app_home_opened
     │   ├── score-entry.mjs      # Score submission, auto stars, admin edits, game finalization
     │   ├── leaderboard.mjs      # Game history queries (capped at 7 days, 10 games)
-    │   └── stats-api.mjs        # Read-only GET endpoints for dashboard (/stats/players,games,scores,live)
+    │   ├── stats-api.mjs        # Read-only GET endpoints for dashboard (/stats/players,games,scores,live)
+    │   ├── auth.mjs             # Slack OpenID Connect sign-in for the web app (/auth/slack/login, /callback, /me)
+    │   ├── web-game.mjs         # Web-app game endpoints (/games/me|create|join|mulligan|drop|finish, /scores, /votes/start) — Bearer JWT auth
+    │   ├── score-worker.mjs     # Async Lambda for save + Slack fanout (fire-and-forget from Slack and web)
+    │   └── quickler-timer.mjs   # EventBridge-scheduled handler that auto-zeros missing Quickler submitters at 30s
     └── lib/
         ├── blocks.mjs           # All Slack Block Kit views — home states, modals, scoreboard, player card
-        ├── cards.mjs            # Card deck, point values, word parsing, score calculation, breakdown enumeration
-        ├── db.mjs               # DynamoDB CRUD — games, scores, players, mulligans, preferences, dealers
+        ├── cards.mjs            # Card deck, point values, word parsing, breakdowns, getHandRange, dealSizeForHand
+        ├── db.mjs               # DynamoDB CRUD — games, scores, players, mulligans, preferences, dealers, recordDeal
         ├── home.mjs             # Shared renderHome (player + admin views), resolveNames, findCurrentRound, etc.
         ├── slack.mjs            # Slack WebClient wrapper, mock support, dmUser, dmAllPlayers
-        └── verify.mjs           # Slack request signature verification (normalizes header casing)
+        ├── verify.mjs           # Slack request signature verification (normalizes header casing)
+        ├── jwt.mjs              # HS256 JWT sign/verify for web-app session tokens (no external deps)
+        ├── vote.mjs             # Dictionary-rejection vote system — startWordVote, timer, resolveVote
+        ├── quickler.mjs         # EventBridge Scheduler helpers for the 30s Quickler timer
+        ├── autoq-deck.mjs       # 118-card Quiddler deck, shuffleDeck, dealFromPool, filterOptionsAgainstDealt
+        ├── autoq-bots.mjs       # AutoQ bot play selection from historical scores
+        ├── autoq-db.mjs         # AutoQ-specific persistence
+        └── dictionary.mjs       # Merriam-Webster validation + house-rule overrides
 ```
 
 ## 4. Architecture Patterns
@@ -82,17 +93,30 @@ All state is in DynamoDB. No in-memory state between Lambda invocations. The Sla
 ### Auth Strategy
 - **Slack requests:** Signature verification via HMAC-SHA256 (`verify.mjs`). Headers normalized to lowercase for API Gateway compatibility.
 - **Stats API (GET):** No auth — public read-only endpoints. Bypasses Slack signature check.
+- **Web-app endpoints (`/games/*`, `/scores`, `/votes/start`):** HS256 JWT in `Authorization: Bearer`. Tokens are issued by `/auth/slack/callback` after a successful Slack OpenID Connect exchange and signed with `SESSION_SECRET` (`jwt.mjs`).
+- **OAuth state is JWT-signed too** — the post-login redirect target is encoded into the OAuth `state` parameter so a localhost dev origin can roundtrip back to itself; allowed origins are `DASHBOARD_URL` and any `localhost`/`127.0.0.1` host.
 - **Admin actions:** Server-side check `payload.user.id === ADMIN_USER` on all admin handlers.
 
 ### Routing
 `router.mjs` checks in order:
 1. `GET /stats/*` → `stats-api.mjs` (no signature check)
-2. `url_verification` → challenge response
-3. Slack signature verification
-4. `event_callback` → `game-flow.mjs`
-5. `block_actions` → routed by `action_id` to game-flow, score-entry, or leaderboard
-6. `view_submission` → routed by `callback_id`
-7. `qbim_admin_*` actions → `score-entry.mjs`
+2. `GET /auth/*` → `auth.mjs` (Slack OIDC sign-in flow, browser-driven)
+3. `/games/*`, `POST /scores`, `POST /votes/start` → `web-game.mjs` (Bearer JWT auth)
+4. `url_verification` → challenge response
+5. Slack signature verification
+6. `event_callback` → `game-flow.mjs`
+7. `block_actions` → routed by `action_id` to game-flow, score-entry, or leaderboard
+8. `view_submission` → routed by `callback_id`
+9. `qbim_admin_*` actions → `score-entry.mjs`
+
+### Digital deck
+All three game types (QBIM, Quickler, AutoQ) deal `hand + 3` cards per round (6 for Hand 3, 7 for Hand 4, etc.) — standard Quiddler rule. The extra 3 are the "discards" players don't have to score with. The single source of truth is `cards.dealSizeForHand(gameType, hand, mulligans)`.
+
+Games opt into in-app dealing via `game.deck_type = "Digital"` (default: `"Physical"`, scores only). Digital games persist:
+- `game.dealt_cards[playerId#hand]` — what the player currently holds
+- `game.hand_seen_cards[playerId#hand]` — accumulates the full set of cards shown that hand (initial + every mulligan discard); mulligan re-deals draw from `118 - hand_seen_cards`, so the pool depletes within a hand
+- New hands re-shuffle the full 118-card deck — `hand_seen_cards` is per-hand, not per-game
+- `db.recordDeal()` updates both maps atomically
 
 ## 5. Data Models & Schema
 

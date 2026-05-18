@@ -34,8 +34,26 @@ function redirectUri(event) {
   return `https://${ctx.domainName}/${ctx.stage}/auth/slack/callback`;
 }
 
+// Allowed origins for the post-OAuth redirect. Prod dashboard + any localhost
+// port for dev. Anything else falls back to DASHBOARD_URL.
+function isAllowedReturnOrigin(url) {
+  try {
+    const u = new URL(url);
+    if (u.origin === process.env.DASHBOARD_URL) return true;
+    if (u.hostname === "localhost" || u.hostname === "127.0.0.1") return true;
+  } catch { /* not a URL */ }
+  return false;
+}
+
 async function slackLogin(event) {
-  const state = randomBytes(16).toString("hex");
+  // Caller may request a specific return origin (e.g. http://localhost:3000)
+  // for dev testing. We JWT-sign it into the OAuth `state` so the callback
+  // can trust it. Falls back to the production dashboard URL.
+  const requestedReturn = event.queryStringParameters?.return_to;
+  const returnTo = (requestedReturn && isAllowedReturnOrigin(requestedReturn))
+    ? requestedReturn
+    : process.env.DASHBOARD_URL;
+  const state = signJwt({ rt: returnTo, nonce: randomBytes(8).toString("hex") }, process.env.SESSION_SECRET, 600);
   const params = new URLSearchParams({
     response_type: "code",
     scope: "openid email profile",
@@ -90,14 +108,26 @@ async function slackCallback(event) {
 
   await db.upsertPlayerOAuthProfile(slackId, { displayName, email, avatarUrl: picture });
 
+  // Internal tool — sign-in friction matters more than token rotation, so
+  // session tokens never expire. Revoke by rotating SESSION_SECRET.
   const jwt = signJwt(
     { sub: slackId, email, name: displayName, picture },
-    process.env.SESSION_SECRET
+    process.env.SESSION_SECRET,
+    null
   );
+
+  // Recover the signed return-to origin from the OAuth state. Defaults to
+  // DASHBOARD_URL if the state is missing / unverifiable.
+  let returnTo = process.env.DASHBOARD_URL;
+  const stateJwt = event.queryStringParameters?.state;
+  if (stateJwt) {
+    const stateClaims = verifyJwt(stateJwt, process.env.SESSION_SECRET);
+    if (stateClaims?.rt && isAllowedReturnOrigin(stateClaims.rt)) returnTo = stateClaims.rt;
+  }
 
   return {
     statusCode: 302,
-    headers: { Location: `${process.env.DASHBOARD_URL}/auth/callback?token=${encodeURIComponent(jwt)}` },
+    headers: { Location: `${returnTo}/auth/callback?token=${encodeURIComponent(jwt)}` },
     body: "",
   };
 }

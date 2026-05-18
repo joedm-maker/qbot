@@ -21,12 +21,12 @@ export async function handler(event) {
     return respond(401, { error: "Invalid signature" });
   }
 
-  console.log("game-flow parsed.type:", parsed.type);
+  if (process.env.DEBUG_ROUTING) console.log("game-flow parsed.type:", parsed.type);
 
   try {
     // Events API (app_home_opened)
     if (parsed.type === "event_callback") {
-      console.log("event_callback event.type:", parsed.event?.type);
+      if (process.env.DEBUG_ROUTING) console.log("event_callback event.type:", parsed.event?.type);
       await handleEvent(parsed.event);
       return respond(200);
     }
@@ -116,9 +116,10 @@ async function handleAction(payload) {
       // impatient double-taps) within the debounce window.
       const ok = await db.tryAddMulligan(gameId, userId, hand, dealSizeForHand(g.game_type, hand, 0) - 2);
       if (ok && g.deck_type === "Digital") {
+        // tryAddMulligan only updates the mulligans map; g.hand_seen_cards is
+        // still current, no need to refetch the game just for it.
         const m = await db.getMulliganCount(gameId, userId, hand);
-        const refreshed = await db.getGame(gameId);
-        const seen = refreshed.hand_seen_cards?.[`${userId}#${hand}`] || [];
+        const seen = g.hand_seen_cards?.[`${userId}#${hand}`] || [];
         const dealSize = dealSizeForHand(g.game_type, hand, m);
         const { cards } = dealFromPool(seen, dealSize);
         await db.recordDeal(gameId, userId, hand, cards);

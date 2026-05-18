@@ -86,7 +86,7 @@ export async function handler(event) {
 
   const { raw, parsed } = parseSlackBody(event.body, event.isBase64Encoded);
 
-  console.log("router parsed.type:", parsed.type, "headers:", JSON.stringify(Object.keys(event.headers || {})));
+  if (process.env.DEBUG_ROUTING) console.log("router parsed.type:", parsed.type, "headers:", JSON.stringify(Object.keys(event.headers || {})));
 
   // URL verification (no signature check needed)
   if (parsed.type === "url_verification") {
@@ -98,7 +98,7 @@ export async function handler(event) {
     console.warn("Signature verification FAILED");
     return { statusCode: 401, body: '{"error":"Invalid signature"}' };
   }
-  console.log("Signature verified OK");
+  if (process.env.DEBUG_ROUTING) console.log("Signature verified OK");
 
   // Events API — always game-flow
   if (parsed.type === "event_callback") {

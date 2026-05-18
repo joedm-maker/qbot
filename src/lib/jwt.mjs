@@ -21,9 +21,14 @@ function sign(headerAndPayload, secret) {
   return b64urlEncode(createHmac("sha256", secret).update(headerAndPayload).digest());
 }
 
+// Pass `expiresInSeconds = null` to omit the `exp` claim entirely (token never
+// expires). Used for web-app session tokens since this is an internal tool and
+// re-signing-in is a friction point. The OAuth state JWT still passes a short
+// TTL because that one genuinely needs to expire.
 export function signJwt(payload, secret, expiresInSeconds = 60 * 60 * 24 * 30) {
   const now = Math.floor(Date.now() / 1000);
-  const fullPayload = { ...payload, iat: now, exp: now + expiresInSeconds };
+  const fullPayload = { ...payload, iat: now };
+  if (expiresInSeconds != null) fullPayload.exp = now + expiresInSeconds;
   const headerPart = b64urlEncode(JSON.stringify({ alg: "HS256", typ: "JWT" }));
   const payloadPart = b64urlEncode(JSON.stringify(fullPayload));
   const signaturePart = sign(`${headerPart}.${payloadPart}`, secret);

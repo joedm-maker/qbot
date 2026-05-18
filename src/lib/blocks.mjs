@@ -76,6 +76,11 @@ export function homeActive(game, playerNames, round, totals, rawScores, viewerId
     const mulliganNote = round.mulligans > 0
       ? ` (${round.mulligans} mulligan${round.mulligans > 1 ? "s" : ""} — max ${round.maxCards} cards)`
       : "";
+    // Digital deck: surface the dealt cards inline so Slack-only players can
+    // see their hand without flipping over to /play.
+    if (game.deck_type === "Digital" && round.dealtCards?.length) {
+      blks.push(section(`🎴 *Your hand:* ${round.dealtCards.join(" · ")}`));
+    }
     if (round.canSubmit) {
       if (hasQuicklerTimer) {
         blks.push(section(`🚨 ${quicklerTimerNote} — Submit now!`));

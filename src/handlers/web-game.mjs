@@ -262,13 +262,13 @@ async function takeMulligan(userId, event) {
   if (!ok) {
     return jsonResp(400, { error: "Can't take another mulligan — would drop below the 2-card minimum (or you just took one)." });
   }
-  // Digital deck: deal the new (smaller) hand from the pool. The discarded
-  // hand is in hand_seen_cards already and stays excluded.
+  // Digital deck: deal the new (smaller) hand from the pool. tryAddMulligan
+  // only touched the mulligans map, so hand_seen_cards on the original fetch
+  // is still current.
   if (game.deck_type === "Digital") {
     const mulligans = await db.getMulliganCount(game_id, userId, hand);
     const cardCount = dealSizeForHand(game.game_type, hand, mulligans);
-    const refreshed = await db.getGame(game_id);
-    const seen = refreshed.hand_seen_cards?.[`${userId}#${hand}`] || [];
+    const seen = game.hand_seen_cards?.[`${userId}#${hand}`] || [];
     const { cards } = dealFromPool(seen, cardCount);
     await db.recordDeal(game_id, userId, hand, cards);
   }
