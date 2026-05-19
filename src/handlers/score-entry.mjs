@@ -430,19 +430,34 @@ export async function saveScore(userId, game_id, hand, wordsInput, chosen, butto
     }
   }
 
-  // Qlander singleton rule — reject any word the player already played in
-  // their last 20 fully-complete games. Blocklist was seeded at game-create
-  // or join time and stored as game.qlander_blocklist[player_id].
+  // Qlander singleton rule — reject any word the player already played
+  // either in (a) their last 20 fully-complete games (stored blocklist
+  // seeded at game-create/join), or (b) earlier hands of the current
+  // game. Repeats within the same game count too: a Qlander game can't
+  // include the same word twice from the same player.
   const gameForRules = await db.getGame(game_id);
   if (gameForRules.game_type === "Qlander" && wordsInput.trim()) {
     const blocked = new Set(gameForRules.qlander_blocklist?.[userId] || []);
+    // Fold in this player's prior plays in the current game (excluding
+    // this same hand, which is being overwritten on an edit). Use the
+    // whole-game query — existingScores above is just this hand.
+    const playerPriorScores = await db.getScoresForGame(game_id);
+    for (const s of playerPriorScores) {
+      if (s.player_slack_id !== userId) continue;
+      if (s.hand === hand) continue;
+      const tokens = String(s.words || "").split(/[\s+,]+/).filter(Boolean);
+      for (const t of tokens) {
+        const n = t.toLowerCase().replace(/[^a-z]/g, "");
+        if (n) blocked.add(n);
+      }
+    }
     const repeats = [];
     for (const w of words) {
       const norm = w.toLowerCase().replace(/[^a-z]/g, "");
       if (norm && blocked.has(norm)) repeats.push(w);
     }
     if (repeats.length) {
-      return validationError(`Qlander: you've already played ${repeats.join(", ")} in your last 20 games.`);
+      return validationError(`Qlander: you've already played ${repeats.join(", ")} (last 20 games or earlier this game).`);
     }
   }
 
@@ -759,6 +774,30 @@ export async function finalizeGame(gameId) {
   await postFinalLeaderboard(game, allScores);
   // await postSuperlatives(game, allScores); // tabled — building up the pool first
   await updatePlayerStats(game, allScores);
+
+  // Qlander: refresh each completing player's persisted blocklist so the
+  // next Qlander game they join can read it straight from their player
+  // record without a fresh per-player scan. Only players who played all 8
+  // hands of this game count — partial submitters shouldn't roll into
+  // their own history (matches the spec for game-start computation).
+  const ALL_HANDS = [3, 4, 5, 6, 7, 8, 9, 10];
+  const handsByPlayer = {};
+  for (const s of allScores) {
+    if (!handsByPlayer[s.player_slack_id]) handsByPlayer[s.player_slack_id] = new Set();
+    handsByPlayer[s.player_slack_id].add(s.hand);
+  }
+  const completers = game.players.filter((pid) => {
+    const hs = handsByPlayer[pid];
+    return hs && ALL_HANDS.every((h) => hs.has(h));
+  });
+  await Promise.all(completers.map(async (pid) => {
+    try {
+      const blocked = await db.computeQlanderBlocklist(pid, 20);
+      await db.setPlayerQlanderBlocklist(pid, blocked);
+    } catch (err) {
+      console.warn(`qlander blocklist refresh failed for ${pid}:`, err.message);
+    }
+  }));
 
   // Refresh all players' home tabs
   await Promise.all(game.players.map((pid) => renderHome(pid).catch((err) => console.warn("renderHome failed:", pid, err.message))));

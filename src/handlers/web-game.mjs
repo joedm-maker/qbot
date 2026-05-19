@@ -124,14 +124,19 @@ async function joinLive(userId) {
     await db.recordDeal(game.game_id, userId, startHand, cards);
   }
 
-  // Qlander: seed the joiner's personal blocklist from their last 20
-  // fully-complete games so the singleton rule applies from their first
-  // submission.
+  // Qlander: seed the joiner's personal blocklist so the singleton rule
+  // applies from their first submission. Prefer the persisted list
+  // (maintained at finalizeGame time); fall back to compute-and-cache.
   if (game.game_type === "Qlander") {
-    const set = await db.computeQlanderBlocklist(userId, 20);
+    let words = await db.getPlayerQlanderBlocklist(userId);
+    if (!words) {
+      const set = await db.computeQlanderBlocklist(userId, 20);
+      words = [...set];
+      try { await db.setPlayerQlanderBlocklist(userId, words); } catch { /* ignore */ }
+    }
     const existing = game.qlander_blocklist || {};
     await db.updateGameAttr(game.game_id, {
-      qlander_blocklist: { ...existing, [userId]: [...set] },
+      qlander_blocklist: { ...existing, [userId]: words },
     });
   }
 

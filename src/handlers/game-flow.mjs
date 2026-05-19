@@ -268,12 +268,19 @@ export async function createNewGame(hostSlackId, gameType, deckType = "Physical"
   const initialDealSize = dealSizeForHand(gameType, firstHand, 0);
   const initialDeal = finalDeckType === "Digital" ? dealFromPool([], initialDealSize).cards : null;
 
-  // Qlander: seed the host's personal blocklist from their last 20
-  // fully-complete games. Late joiners get theirs computed when they join.
+  // Qlander: seed the host's personal blocklist. Prefer the player's
+  // persisted list (maintained at finalizeGame time — zero scan cost).
+  // Fall back to a fresh compute if missing, and persist it so next time
+  // the read is free.
   let qlanderBlocklist = null;
   if (gameType === "Qlander") {
-    const set = await db.computeQlanderBlocklist(hostSlackId, 20);
-    qlanderBlocklist = { [hostSlackId]: [...set] };
+    let words = await db.getPlayerQlanderBlocklist(hostSlackId);
+    if (!words) {
+      const set = await db.computeQlanderBlocklist(hostSlackId, 20);
+      words = [...set];
+      try { await db.setPlayerQlanderBlocklist(hostSlackId, words); } catch { /* ignore cache write failure */ }
+    }
+    qlanderBlocklist = { [hostSlackId]: words };
   }
 
   const game = {
@@ -344,12 +351,18 @@ async function joinGame(gameId, slackId) {
     await db.recordDeal(gameId, slackId, startHand, cards);
   }
 
-  // Qlander: seed the joiner's blocklist before they can submit.
+  // Qlander: seed the joiner's blocklist before they can submit. Prefer
+  // the persisted player-record list; fall back to compute-and-cache.
   if (game.game_type === "Qlander") {
-    const set = await db.computeQlanderBlocklist(slackId, 20);
+    let words = await db.getPlayerQlanderBlocklist(slackId);
+    if (!words) {
+      const set = await db.computeQlanderBlocklist(slackId, 20);
+      words = [...set];
+      try { await db.setPlayerQlanderBlocklist(slackId, words); } catch { /* ignore */ }
+    }
     const existing = game.qlander_blocklist || {};
     await db.updateGameAttr(gameId, {
-      qlander_blocklist: { ...existing, [slackId]: [...set] },
+      qlander_blocklist: { ...existing, [slackId]: words },
     });
   }
 

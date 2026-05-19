@@ -516,6 +516,27 @@ export async function recordDeal(gameId, slackId, hand, cards) {
 }
 
 /**
+ * Qlander: read the player's persisted blocklist (last-20 words union).
+ * Maintained at finalizeGame time to keep game-start latency-free.
+ * Returns null when no entry exists (fall back to compute).
+ */
+export async function getPlayerQlanderBlocklist(slackId) {
+  const { Item } = await ddb.send(
+    new GetCommand({ TableName: PLAYERS_TABLE, Key: { slack_id: slackId } })
+  );
+  return Item?.qlander_blocklist || null;
+}
+
+export async function setPlayerQlanderBlocklist(slackId, words) {
+  await ddb.send(new UpdateCommand({
+    TableName: PLAYERS_TABLE,
+    Key: { slack_id: slackId },
+    UpdateExpression: "SET qlander_blocklist = :w, qlander_blocklist_updated_at = :t",
+    ExpressionAttributeValues: { ":w": [...words], ":t": new Date().toISOString() },
+  }));
+}
+
+/**
  * Qlander: compute the set of words a player has personally played in
  * their last N fully-complete games (any game type). A game is "complete
  * for this player" when they have a score record for every hand H3-H10
