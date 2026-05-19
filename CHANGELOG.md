@@ -1,3 +1,17 @@
+## v0.2.4 — 2026-05-19
+
+### Added
+- **Qlander game variant — backend.** Word-singleton format: a player cannot replay any word they personally submitted in their last 20 fully-complete games (any variant), *and* cannot repeat words across hands within the current game. Digital deck is forced for Qlander (rule requires server enforcement).
+- **`db.computeQlanderBlocklist(slackId, limit=20)`** — scans this player's scores, picks games where they played all 8 hands AND game status is `COMPLETE`, takes the most recent 20 by `game_number`, returns the union of normalized words.
+- **`db.getPlayerQlanderBlocklist` / `db.setPlayerQlanderBlocklist`** — read/write a persisted per-player blocklist on the `qbim-players` table so game-start latency stays zero.
+- **`/games/me`** scopes the blocklist response to just the requesting player so others' word histories aren't broadcast.
+
+### Changed
+- **`saveScore` validates Qlander submissions** against both (a) the player's persisted last-20 blocklist seeded on the game record and (b) their own prior plays in the current game (excluding the hand being edited). Rejects with a per-word list of the repeats.
+- **`finalizeGame` refreshes each completer's persisted blocklist** at finalize time (latency-free for users) so future Qlander game starts read O(1) from the player record. First-touch fallback computes-and-caches if a player has no persisted entry yet.
+
+---
+
 ## v0.2.3 — 2026-05-19
 
 ### Added
