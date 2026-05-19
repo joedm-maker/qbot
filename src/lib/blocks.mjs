@@ -250,6 +250,21 @@ export function startGameModal() {
           options: [option("QBIM", "QBIM"), option("Quickler", "Quickler"), option("Hot Swap", "HotSwap"), option("Qlander", "Qlander"), option("Gauntlet", "Gauntlet"), option("AutoQ", "AutoQ")],
         },
       },
+      {
+        type: "input",
+        block_id: "deck_block",
+        label: text("Deck"),
+        element: {
+          type: "static_select",
+          action_id: "deck",
+          initial_option: option("Physical", "physical-quiddler"),
+          options: [
+            option("Physical", "physical-quiddler"),
+            option("Digital", "digital-quiddler"),
+            option("Power", "power"),
+          ],
+        },
+      },
     ],
   };
 }
@@ -307,7 +322,7 @@ export function endGameModal(gameId) {
  * it as a no-op.
  */
 export function handScoreModal(gameId, hand, buttonPressedAt = null, opts = {}) {
-  const { wordsInput = "", testResult = null, invalidWords = null, chosen = null } = opts;
+  const { wordsInput = "", testResult = null, invalidWords = null, chosen = null, bankOptions = null } = opts;
   const inRejection = Array.isArray(invalidWords) && invalidWords.length > 0;
 
   const wordsField = {
@@ -372,6 +387,25 @@ export function handScoreModal(gameId, hand, buttonPressedAt = null, opts = {}) 
     });
   }
 
+  // Hot Swap: optional dropdown to bank one of the dealt cards into the
+  // next hand. Rendered only when caller passes bankOptions (non-empty
+  // array of unique card labels — typically computed from the player's
+  // dealt cards for this hand). Leaving the field unset = "skip banking".
+  if (Array.isArray(bankOptions) && bankOptions.length > 0) {
+    modalBlocks.push({
+      type: "input",
+      block_id: "bank_block",
+      optional: true,
+      label: text("🪙 Bank a card for next hand (Hot Swap)"),
+      element: {
+        type: "static_select",
+        action_id: "bank_choice",
+        placeholder: text("Skip — don't bank a card"),
+        options: bankOptions.map((c) => ({ text: text(c), value: c })),
+      },
+    });
+  }
+
   modalBlocks.push({ type: "divider" });
 
   const voteBtn = {
@@ -419,7 +453,7 @@ export function voteWaitingModal(hand, invalidWords) {
  * Score choice modal — shown when multiple score interpretations exist.
  * E.g. "quiz" could be QU-I-Z (25 pts) or Q-U-I-Z (35 pts).
  */
-export function scoreChoiceModal(gameId, hand, words, options, buttonPressedAt = null) {
+export function scoreChoiceModal(gameId, hand, words, options, buttonPressedAt = null, bankCard = null) {
   const radioOptions = options.map((opt) => ({
     text: { type: "mrkdwn", text: `*${opt.score} pts* — ${opt.breakdown} (${opt.cards} cards)` },
     value: JSON.stringify({ score: opt.score, cards: opt.cards, breakdown: opt.breakdown }),
@@ -428,7 +462,7 @@ export function scoreChoiceModal(gameId, hand, words, options, buttonPressedAt =
   return {
     type: "modal",
     callback_id: "qbim_confirm_score",
-    private_metadata: JSON.stringify({ game_id: gameId, hand, words, button_pressed_at: buttonPressedAt }),
+    private_metadata: JSON.stringify({ game_id: gameId, hand, words, button_pressed_at: buttonPressedAt, bank_card: bankCard }),
     title: text(`Hand ${hand} — Pick Score`),
     submit: text("Confirm"),
     blocks: [

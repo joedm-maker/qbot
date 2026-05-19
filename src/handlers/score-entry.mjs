@@ -73,9 +73,18 @@ async function handleAction(payload) {
       const priorScores = await db.getScoresForGameHand(gameId, hand);
       const prior = priorScores.find((s) => s.player_slack_id === payload.user.id);
       const wordsInput = prior?.words ? prior.words.replace(/\+/g, " ") : "";
+      // Hot Swap: render a bank-card picker in the modal when applicable.
+      // Eligible = HotSwap game type + Digital deck + non-final hand +
+      // dealt cards exist for the player. Options are unique card labels.
+      let bankOptions = null;
+      const gameForModal = await db.getGame(gameId);
+      if (gameForModal?.game_type === "HotSwap" && gameForModal.deck_type === "Digital" && hand < 10) {
+        const dealt = gameForModal.dealt_cards?.[`${payload.user.id}#${hand}`] || [];
+        if (dealt.length > 0) bankOptions = [...new Set(dealt)];
+      }
       await slack().views.open({
         trigger_id: payload.trigger_id,
-        view: blocks.handScoreModal(gameId, hand, buttonPressedAt, { wordsInput }),
+        view: blocks.handScoreModal(gameId, hand, buttonPressedAt, { wordsInput, bankOptions }),
       });
       break;
     }
@@ -327,10 +336,12 @@ async function submitScore(payload) {
   try { ({ game_id, hand, button_pressed_at } = JSON.parse(payload.view.private_metadata)); } catch { return respond(200); }
   const values = payload.view.state.values;
   const wordsInput = values.words_block.words?.value || "";
+  // Hot Swap: optional bank pick from the modal's static_select.
+  const bankCard = values.bank_block?.bank_choice?.selected_option?.value || null;
 
   // Empty submission = couldn't form a word, scores 0
   if (!wordsInput.trim()) {
-    return await saveScore(userId, game_id, hand, "", { score: 0, cards: 0, breakdown: "—" }, button_pressed_at);
+    return await saveScore(userId, game_id, hand, "", { score: 0, cards: 0, breakdown: "—" }, button_pressed_at, bankCard);
   }
 
   // Check for mulligans — reduces max card count
@@ -386,7 +397,7 @@ async function submitScore(payload) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         response_action: "update",
-        view: blocks.scoreChoiceModal(game_id, hand, wordsInput, options, button_pressed_at),
+        view: blocks.scoreChoiceModal(game_id, hand, wordsInput, options, button_pressed_at, bankCard),
       }),
     };
   }
@@ -396,6 +407,7 @@ async function submitScore(payload) {
     userId, game_id, hand,
     wordsInput, chosen: options[0], buttonPressedAt: button_pressed_at,
     validated: true,
+    bankCard,
   });
   return respond(200, { response_action: "clear" });
 }
@@ -407,7 +419,7 @@ async function confirmScore(payload) {
   const userId = payload.user.id;
   let meta;
   try { meta = JSON.parse(payload.view.private_metadata); } catch { return respond(200); }
-  const { game_id, hand, words, button_pressed_at } = meta;
+  const { game_id, hand, words, button_pressed_at, bank_card: bankCard = null } = meta;
   const values = payload.view.state.values;
   const selectedValue = values.score_choice_block.score_choice.selected_option.value;
   let chosen;
@@ -442,6 +454,7 @@ async function confirmScore(payload) {
     userId, game_id, hand,
     wordsInput: words, chosen, buttonPressedAt: button_pressed_at,
     validated: true,
+    bankCard,
   });
   return respond(200, { response_action: "clear" });
 }
