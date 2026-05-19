@@ -259,14 +259,29 @@ export async function createNewGame(hostSlackId, gameType, deckType = "Physical"
   const maxGameNumber = await db.getMaxGameNumber();
   const gameNumber = maxGameNumber + 1;
 
-  // Qlander enforces Digital deck — the word-singleton rule depends on
-  // the server enforcing the blocklist, which requires server-side
-  // tracking of plays. Force the deck type accordingly.
-  const finalDeckType = gameType === "Qlander" ? "Digital" : deckType;
+  // Qlander + Gauntlet enforce Digital deck (singleton-rule enforcement
+  // and pre-dealt 8-hand grid respectively both require server-side
+  // tracking). Force the deck type accordingly.
+  const finalDeckType = (gameType === "Qlander" || gameType === "Gauntlet") ? "Digital" : deckType;
 
   const firstHand = getHandRange(gameType)[0];
   const initialDealSize = dealSizeForHand(gameType, firstHand, 0);
   const initialDeal = finalDeckType === "Digital" ? dealFromPool([], initialDealSize).cards : null;
+
+  // Gauntlet: deal all 8 hands face-down at game start. Each hand is a
+  // fresh shuffle of the full 118-card deck (independent shuffles per
+  // hand, same as QBIM's per-hand reshuffle). Player picks any order in
+  // the 4x2 grid UI; selection happens client-side.
+  const gauntletDealtCards = {};
+  const gauntletHandSeen = {};
+  if (gameType === "Gauntlet" && finalDeckType === "Digital") {
+    for (let h = 3; h <= 10; h++) {
+      const dealSize = dealSizeForHand(gameType, h, 0);
+      const { cards } = dealFromPool([], dealSize);
+      gauntletDealtCards[`${hostSlackId}#${h}`] = cards;
+      gauntletHandSeen[`${hostSlackId}#${h}`] = [...cards];
+    }
+  }
 
   // Qlander: seed the host's personal blocklist. Prefer the player's
   // persisted list (maintained at finalizeGame time — zero scan cost).
@@ -283,6 +298,7 @@ export async function createNewGame(hostSlackId, gameType, deckType = "Physical"
     qlanderBlocklist = { [hostSlackId]: words };
   }
 
+  const usingGauntletDeals = gameType === "Gauntlet" && Object.keys(gauntletDealtCards).length > 0;
   const game = {
     game_id: crypto.randomUUID(),
     game_date: today,
@@ -295,8 +311,12 @@ export async function createNewGame(hostSlackId, gameType, deckType = "Physical"
     player_start_hands: { [hostSlackId]: firstHand },
     mulligans: {},
     dealers: [],
-    dealt_cards: initialDeal ? { [`${hostSlackId}#${firstHand}`]: initialDeal } : {},
-    hand_seen_cards: initialDeal ? { [`${hostSlackId}#${firstHand}`]: initialDeal } : {},
+    dealt_cards: usingGauntletDeals
+      ? gauntletDealtCards
+      : (initialDeal ? { [`${hostSlackId}#${firstHand}`]: initialDeal } : {}),
+    hand_seen_cards: usingGauntletDeals
+      ? gauntletHandSeen
+      : (initialDeal ? { [`${hostSlackId}#${firstHand}`]: initialDeal } : {}),
     created_at: new Date().toISOString(),
     ...(qlanderBlocklist ? { qlander_blocklist: qlanderBlocklist } : {}),
   };
@@ -345,10 +365,20 @@ async function joinGame(gameId, slackId) {
 
   // Digital deck: deal the joiner cards for whichever hand they're starting
   // at (fresh deck — per-hand seen set, so no prior history applies).
+  // Gauntlet: deal ALL remaining hands (startHand..10) up front so the
+  // joiner sees the same 4x2 grid as the host.
   if (game.deck_type === "Digital") {
-    const dealSize = dealSizeForHand(game.game_type, startHand, 0);
-    const { cards } = dealFromPool([], dealSize);
-    await db.recordDeal(gameId, slackId, startHand, cards);
+    if (game.game_type === "Gauntlet") {
+      for (let h = startHand; h <= 10; h++) {
+        const dealSize = dealSizeForHand(game.game_type, h, 0);
+        const { cards } = dealFromPool([], dealSize);
+        await db.recordDeal(gameId, slackId, h, cards);
+      }
+    } else {
+      const dealSize = dealSizeForHand(game.game_type, startHand, 0);
+      const { cards } = dealFromPool([], dealSize);
+      await db.recordDeal(gameId, slackId, startHand, cards);
+    }
   }
 
   // Qlander: seed the joiner's blocklist before they can submit. Prefer

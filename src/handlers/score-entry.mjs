@@ -420,9 +420,13 @@ export async function saveScore(userId, game_id, hand, wordsInput, chosen, butto
   const existingScores = await db.getScoresForGameHand(game_id, hand);
   const isEdit = existingScores.some((s) => s.player_slack_id === userId);
 
-  // Block edits to hands where all eligible players have submitted
+  // Block edits to hands where all eligible players have submitted.
+  // Gauntlet locks every hand on submission — no re-tries once recorded.
   if (isEdit) {
     const game = await db.getGame(game_id);
+    if (game.game_type === "Gauntlet") {
+      return validationError(`Gauntlet: submitted hands are locked.`);
+    }
     const startHands = game.player_start_hands || {};
     const eligiblePlayers = game.players.filter((pid) => (startHands[pid] || 3) <= hand);
     if (existingScores.length >= eligiblePlayers.length) {
@@ -560,23 +564,50 @@ export async function saveScore(userId, game_id, hand, wordsInput, chosen, butto
     }
   }
 
-  // Check if all eligible players submitted this hand
-  const handScores = await db.getScoresForGameHand(game_id, hand);
-  if (handScores.length >= eligiblePlayers.length) {
-    // Hand complete — clear Quickler timer if active
-    if (game.game_type === "Quickler" && game.quickler_timer_schedule_name) {
-      try { await deleteQuicklerTimer(game.quickler_timer_schedule_name); } catch (err) { console.warn("Timer cleanup:", err.message); }
-      await db.updateGameAttr(game_id, {
-        quickler_timer_started_at: null,
-        quickler_timer_hand: null,
-        quickler_timer_schedule_name: null,
+  if (game.game_type === "Gauntlet") {
+    // Gauntlet: hands are played in any order at each player's pace. Skip
+    // the linear per-hand star award and the "deal the next hand" flow.
+    // Instead check whether every eligible player has now submitted all 8
+    // of their hands — if yes, transition to review (the Finalize Game
+    // button on /play takes it from there). Stars get computed once at
+    // finalize time, not per-hand.
+    const allScores = await db.getScoresForGame(game_id);
+    const handsByPlayer = new Map();
+    for (const s of allScores) {
+      if (!handsByPlayer.has(s.player_slack_id)) handsByPlayer.set(s.player_slack_id, new Set());
+      handsByPlayer.get(s.player_slack_id).add(s.hand);
+    }
+    const ALL_HANDS = [3, 4, 5, 6, 7, 8, 9, 10];
+    const startHands = game.player_start_hands || {};
+    const everyoneDone = game.players.every((pid) => {
+      const required = ALL_HANDS.filter((h) => (startHands[pid] || 3) <= h);
+      const got = handsByPlayer.get(pid) || new Set();
+      return required.every((h) => got.has(h));
+    });
+    if (everyoneDone && !game.review_started_at) {
+      await db.updateGameStatus(game_id, "ACTIVE", {
+        review_started_at: new Date().toISOString(),
       });
     }
-    // Re-calculate stars; only post channel summary & check game completion on first completion
-    await autoAwardStars(game, hand, handScores, !isEdit);
-  } else if (eligiblePlayers.length - handScores.length === 1) {
-    // Exactly one player remaining — record timestamp for slow submitter nudge
-    await db.updateGameAttr(game_id, { last_waiting_since: new Date().toISOString() });
+  } else {
+    // Check if all eligible players submitted this hand
+    const handScores = await db.getScoresForGameHand(game_id, hand);
+    if (handScores.length >= eligiblePlayers.length) {
+      // Hand complete — clear Quickler timer if active
+      if (game.game_type === "Quickler" && game.quickler_timer_schedule_name) {
+        try { await deleteQuicklerTimer(game.quickler_timer_schedule_name); } catch (err) { console.warn("Timer cleanup:", err.message); }
+        await db.updateGameAttr(game_id, {
+          quickler_timer_started_at: null,
+          quickler_timer_hand: null,
+          quickler_timer_schedule_name: null,
+        });
+      }
+      // Re-calculate stars; only post channel summary & check game completion on first completion
+      await autoAwardStars(game, hand, handScores, !isEdit);
+    } else if (eligiblePlayers.length - handScores.length === 1) {
+      // Exactly one player remaining — record timestamp for slow submitter nudge
+      await db.updateGameAttr(game_id, { last_waiting_since: new Date().toISOString() });
+    }
   }
 
   // Refresh the user's home tab
@@ -771,6 +802,26 @@ export async function finalizeGame(gameId) {
   });
 
   const allScores = await db.getScoresForGame(gameId);
+
+  // Gauntlet defers per-hand star awards to finalize time (hands resolve
+  // asynchronously, so the usual "all eligible submitted this hand"
+  // trigger doesn't fire naturally). Loop H3-H10 and call autoAwardStars
+  // for any hand that has scores. `announce: false` skips the per-hand
+  // DM blast — the final-leaderboard message below covers the full game.
+  if (game.game_type === "Gauntlet") {
+    for (let h = 3; h <= 10; h++) {
+      const handScores = allScores.filter((s) => s.hand === h);
+      if (handScores.length > 0) {
+        await autoAwardStars(game, h, handScores, false);
+      }
+    }
+    // Re-pull scores so stars awarded above are reflected in the
+    // leaderboard + stats writes that follow.
+    const refreshed = await db.getScoresForGame(gameId);
+    allScores.length = 0;
+    allScores.push(...refreshed);
+  }
+
   await postFinalLeaderboard(game, allScores);
   // await postSuperlatives(game, allScores); // tabled — building up the pool first
   await updatePlayerStats(game, allScores);

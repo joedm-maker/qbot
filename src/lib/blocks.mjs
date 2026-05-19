@@ -247,7 +247,7 @@ export function startGameModal() {
           type: "static_select",
           action_id: "game_type",
           initial_option: option("QBIM", "QBIM"),
-          options: [option("QBIM", "QBIM"), option("Quickler", "Quickler"), option("Hot Swap", "HotSwap"), option("Qlander", "Qlander"), option("AutoQ", "AutoQ")],
+          options: [option("QBIM", "QBIM"), option("Quickler", "Quickler"), option("Hot Swap", "HotSwap"), option("Qlander", "Qlander"), option("Gauntlet", "Gauntlet"), option("AutoQ", "AutoQ")],
         },
       },
     ],

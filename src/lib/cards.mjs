@@ -42,7 +42,7 @@ export function dealSizeForHand(gameType, hand, mulligans = 0) {
  * All recognized game types. Used to validate game_type inputs from
  * Slack modals and web endpoints.
  */
-export const GAME_TYPES = ["QBIM", "Quickler", "AutoQ", "HotSwap", "Qlander"];
+export const GAME_TYPES = ["QBIM", "Quickler", "AutoQ", "HotSwap", "Qlander", "Gauntlet"];
 
 export function isValidGameType(t) {
   return GAME_TYPES.includes(t);

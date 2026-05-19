@@ -118,10 +118,20 @@ async function joinLive(userId) {
 
   // Digital deck: deal cards for the joiner's current hand from a fresh
   // shuffled deck (per-hand seen set — late joiners start clean).
+  // Gauntlet: deal ALL remaining hands (startHand..10) at once so the
+  // joiner sees the same 4x2 grid as the host.
   if (game.deck_type === "Digital") {
-    const dealSize = dealSizeForHand(game.game_type, startHand, 0);
-    const { cards } = dealFromPool([], dealSize);
-    await db.recordDeal(game.game_id, userId, startHand, cards);
+    if (game.game_type === "Gauntlet") {
+      for (let h = startHand; h <= 10; h++) {
+        const dealSize = dealSizeForHand(game.game_type, h, 0);
+        const { cards } = dealFromPool([], dealSize);
+        await db.recordDeal(game.game_id, userId, h, cards);
+      }
+    } else {
+      const dealSize = dealSizeForHand(game.game_type, startHand, 0);
+      const { cards } = dealFromPool([], dealSize);
+      await db.recordDeal(game.game_id, userId, startHand, cards);
+    }
   }
 
   // Qlander: seed the joiner's personal blocklist so the singleton rule
