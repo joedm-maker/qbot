@@ -1,3 +1,21 @@
+## v0.2.5 — 2026-05-19
+
+### Added
+- **Gauntlet game variant — backend.** All 8 hands dealt face-down at game start; players pick any order. Digital deck enforced. Per-hand stars are computed at finalize time (hands resolve asynchronously, so the per-hand "all submitted" trigger doesn't fire naturally). Submitted hands are locked — no edits.
+- Slack game-creation modal: "Gauntlet" added to the type select.
+- `createNewGame` / `joinGame` / `joinLive` deal H3-H10 (or remaining hands for late joiners) up front for Gauntlet.
+
+### Changed
+- **`saveScore`** for Gauntlet skips the linear per-hand auto-advance, blocks all edits to submitted hands, and triggers `review_started_at` once every eligible player has submitted all 8 (or all dealt) hands.
+- **`finalizeGame`** for Gauntlet loops H3-H10 calling `autoAwardStars` once per hand (announce=false to skip per-hand DMs) before posting the final leaderboard.
+- **`OPEN → ACTIVE`** transition fires on any first submission, not just hand 3 — Gauntlet players can pick H7 first and the status flip still happens correctly. No-op for the linear variants since their first submission is always hand 3.
+
+### Known v1 gaps
+- No 60-second race timer scheduler (Finalize button handles wrap-up).
+- No Slack score-entry support for Gauntlet — /play only.
+
+---
+
 ## v0.2.4 — 2026-05-19
 
 ### Added
