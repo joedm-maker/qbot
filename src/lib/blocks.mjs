@@ -72,7 +72,47 @@ export function homeActive(game, playerNames, round, totals, rawScores, viewerId
     quicklerTimerNote = remaining > 0 ? `⏱️ *Quickler Timer: ~${remaining}s remaining!*` : "⏱️ *Time's up!*";
   }
 
-  if (round && round.hand) {
+  // Gauntlet: replace the linear "Enter Hand X Score" with a per-hand
+  // picker — one button per unsubmitted hand. The /play 4×2 grid doesn't
+  // translate to Block Kit, so this renders as a status line plus one or
+  // two actions rows (Slack caps actions at 5 buttons per block).
+  if (game.game_type === "Gauntlet") {
+    const submittedByMe = new Set();
+    const scoreByHand = new Map();
+    for (const s of rawScores || []) {
+      if (s.player_slack_id !== viewerId) continue;
+      submittedByMe.add(s.hand);
+      scoreByHand.set(s.hand, s);
+    }
+    const dealtByMe = new Set();
+    for (const key of Object.keys(game.dealt_cards || {})) {
+      const [pid, hStr] = key.split("#");
+      if (pid === viewerId) dealtByMe.add(Number(hStr));
+    }
+    const allHands = [3, 4, 5, 6, 7, 8, 9, 10];
+    const statusLine = allHands.map((h) => {
+      if (submittedByMe.has(h)) {
+        const s = scoreByHand.get(h);
+        const star = (s?.stars || 0) > 0 ? "★".repeat(s.stars) : "";
+        return `*H${h}*: ${s?.raw_score ?? 0}${star}`;
+      }
+      if (dealtByMe.has(h)) return `*H${h}*: 🎴`;
+      return `*H${h}*: —`;
+    });
+    blks.push(section(`*Your hands*\n${statusLine.join("  ·  ")}`));
+    const unsubmittedDealt = allHands.filter((h) => dealtByMe.has(h) && !submittedByMe.has(h));
+    if (unsubmittedDealt.length > 0) {
+      // Slack actions blocks max out at 5 elements — split into chunks.
+      for (let i = 0; i < unsubmittedDealt.length; i += 5) {
+        const chunk = unsubmittedDealt.slice(i, i + 5);
+        blks.push(actions(chunk.map((h) =>
+          button(`Play Hand ${h}`, "qbim_open_hand_modal", `${game.game_id}|${h}`)
+        )));
+      }
+    } else {
+      blks.push(section("✅ All your hands are in. Waiting for others or for finalize."));
+    }
+  } else if (round && round.hand) {
     const mulliganNote = round.mulligans > 0
       ? ` (${round.mulligans} mulligan${round.mulligans > 1 ? "s" : ""} — max ${round.maxCards} cards)`
       : "";
@@ -322,7 +362,7 @@ export function endGameModal(gameId) {
  * it as a no-op.
  */
 export function handScoreModal(gameId, hand, buttonPressedAt = null, opts = {}) {
-  const { wordsInput = "", testResult = null, invalidWords = null, chosen = null, bankOptions = null } = opts;
+  const { wordsInput = "", testResult = null, invalidWords = null, chosen = null, bankOptions = null, dealtCards = null } = opts;
   const inRejection = Array.isArray(invalidWords) && invalidWords.length > 0;
 
   const wordsField = {
@@ -346,6 +386,17 @@ export function handScoreModal(gameId, hand, buttonPressedAt = null, opts = {}) 
     modalBlocks.push({
       type: "section",
       text: { type: "mrkdwn", text: `⚠️ Not in the dictionary: ${bad}` },
+    });
+  }
+
+  // Surface the player's dealt cards at the top of the modal when known
+  // (Digital deck games). Useful for Gauntlet — the home tab picker only
+  // shows the per-hand button, not the cards, so without this the player
+  // can't see what they have until they reach the modal.
+  if (Array.isArray(dealtCards) && dealtCards.length > 0) {
+    modalBlocks.push({
+      type: "section",
+      text: { type: "mrkdwn", text: `🎴 *Your hand:* ${dealtCards.join("  ·  ")}` },
     });
   }
 

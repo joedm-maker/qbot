@@ -76,15 +76,17 @@ async function handleAction(payload) {
       // Hot Swap: render a bank-card picker in the modal when applicable.
       // Eligible = HotSwap game type + Digital deck + non-final hand +
       // dealt cards exist for the player. Options are unique card labels.
-      let bankOptions = null;
       const gameForModal = await db.getGame(gameId);
-      if (gameForModal?.game_type === "HotSwap" && gameForModal.deck_type === "Digital" && hand < 10) {
-        const dealt = gameForModal.dealt_cards?.[`${payload.user.id}#${hand}`] || [];
-        if (dealt.length > 0) bankOptions = [...new Set(dealt)];
+      const dealtCards = gameForModal?.deck_type === "Digital"
+        ? (gameForModal.dealt_cards?.[`${payload.user.id}#${hand}`] || null)
+        : null;
+      let bankOptions = null;
+      if (gameForModal?.game_type === "HotSwap" && gameForModal.deck_type === "Digital" && hand < 10 && dealtCards?.length > 0) {
+        bankOptions = [...new Set(dealtCards)];
       }
       await slack().views.open({
         trigger_id: payload.trigger_id,
-        view: blocks.handScoreModal(gameId, hand, buttonPressedAt, { wordsInput, bankOptions }),
+        view: blocks.handScoreModal(gameId, hand, buttonPressedAt, { wordsInput, bankOptions, dealtCards }),
       });
       break;
     }
