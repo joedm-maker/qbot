@@ -512,9 +512,13 @@ export async function saveScore(userId, game_id, hand, wordsInput, chosen, butto
     }
   }
 
-  // If this is the first hand 3 score, transition OPEN → ACTIVE
+  // If this is the first score submitted for the game, transition
+  // OPEN → ACTIVE. For QBIM/Quickler/HotSwap/Qlander only hand 3 is
+  // dealt initially so the first submission is always hand 3. Gauntlet
+  // deals all 8 hands upfront and players pick freely, so the first
+  // submission can be any hand — accept any.
   const game = await db.getGame(game_id);
-  if (game.status === "OPEN" && hand === 3) {
+  if (game.status === "OPEN") {
     await db.updateGameStatus(game_id, "ACTIVE", {
       locked_at: new Date().toISOString(),
     });
