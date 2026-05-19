@@ -259,15 +259,29 @@ export async function createNewGame(hostSlackId, gameType, deckType = "Physical"
   const maxGameNumber = await db.getMaxGameNumber();
   const gameNumber = maxGameNumber + 1;
 
+  // Qlander enforces Digital deck — the word-singleton rule depends on
+  // the server enforcing the blocklist, which requires server-side
+  // tracking of plays. Force the deck type accordingly.
+  const finalDeckType = gameType === "Qlander" ? "Digital" : deckType;
+
   const firstHand = getHandRange(gameType)[0];
   const initialDealSize = dealSizeForHand(gameType, firstHand, 0);
-  const initialDeal = deckType === "Digital" ? dealFromPool([], initialDealSize).cards : null;
+  const initialDeal = finalDeckType === "Digital" ? dealFromPool([], initialDealSize).cards : null;
+
+  // Qlander: seed the host's personal blocklist from their last 20
+  // fully-complete games. Late joiners get theirs computed when they join.
+  let qlanderBlocklist = null;
+  if (gameType === "Qlander") {
+    const set = await db.computeQlanderBlocklist(hostSlackId, 20);
+    qlanderBlocklist = { [hostSlackId]: [...set] };
+  }
+
   const game = {
     game_id: crypto.randomUUID(),
     game_date: today,
     status: "OPEN",
     game_type: gameType,
-    deck_type: deckType,
+    deck_type: finalDeckType,
     game_number: gameNumber,
     host_slack_id: hostSlackId,
     players: [hostSlackId],
@@ -277,6 +291,7 @@ export async function createNewGame(hostSlackId, gameType, deckType = "Physical"
     dealt_cards: initialDeal ? { [`${hostSlackId}#${firstHand}`]: initialDeal } : {},
     hand_seen_cards: initialDeal ? { [`${hostSlackId}#${firstHand}`]: initialDeal } : {},
     created_at: new Date().toISOString(),
+    ...(qlanderBlocklist ? { qlander_blocklist: qlanderBlocklist } : {}),
   };
 
   await db.createGame(game);
@@ -327,6 +342,15 @@ async function joinGame(gameId, slackId) {
     const dealSize = dealSizeForHand(game.game_type, startHand, 0);
     const { cards } = dealFromPool([], dealSize);
     await db.recordDeal(gameId, slackId, startHand, cards);
+  }
+
+  // Qlander: seed the joiner's blocklist before they can submit.
+  if (game.game_type === "Qlander") {
+    const set = await db.computeQlanderBlocklist(slackId, 20);
+    const existing = game.qlander_blocklist || {};
+    await db.updateGameAttr(gameId, {
+      qlander_blocklist: { ...existing, [slackId]: [...set] },
+    });
   }
 
   const info = await slack().users.info({ user: slackId });

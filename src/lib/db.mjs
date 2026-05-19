@@ -516,6 +516,66 @@ export async function recordDeal(gameId, slackId, hand, cards) {
 }
 
 /**
+ * Qlander: compute the set of words a player has personally played in
+ * their last N fully-complete games (any game type). A game is "complete
+ * for this player" when they have a score record for every hand H3-H10
+ * AND the game's status is COMPLETE (so partial/archived rounds don't
+ * contribute). Returns a Set of normalized words (lowercase, alpha-only).
+ *
+ * Used at Qlander game start to seed game.qlander_blocklist[playerId]
+ * so subsequent score submissions can validate against past plays.
+ */
+export async function computeQlanderBlocklist(slackId, limit = 20) {
+  // Pull every score this player has — small enough to scan rather than
+  // maintain a GSI for now (~few hundred rows per active player).
+  const allScores = [];
+  let lastKey;
+  do {
+    const result = await ddb.send(new ScanCommand({
+      TableName: SCORES_TABLE,
+      FilterExpression: "player_slack_id = :pid",
+      ExpressionAttributeValues: { ":pid": slackId },
+      ExclusiveStartKey: lastKey,
+    }));
+    allScores.push(...(result.Items || []));
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
+
+  if (!allScores.length) return new Set();
+
+  // Group hands played per game.
+  const handsByGame = new Map();
+  for (const s of allScores) {
+    if (!handsByGame.has(s.game_id)) handsByGame.set(s.game_id, new Set());
+    handsByGame.get(s.game_id).add(s.hand);
+  }
+
+  // Identify games where this player played all 8 hands AND the game
+  // is COMPLETE (skip ACTIVE/ARCHIVED). Sort newest first.
+  const ALL_HANDS = [3, 4, 5, 6, 7, 8, 9, 10];
+  const candidateIds = [...handsByGame.entries()]
+    .filter(([, hands]) => ALL_HANDS.every((h) => hands.has(h)))
+    .map(([gid]) => gid);
+  const candidateGames = await Promise.all(candidateIds.map((gid) => getGame(gid)));
+  const completeGames = candidateGames
+    .filter((g) => g && g.status === "COMPLETE")
+    .sort((a, b) => (b.game_number || 0) - (a.game_number || 0))
+    .slice(0, limit);
+
+  const recentIds = new Set(completeGames.map((g) => g.game_id));
+  const blocked = new Set();
+  for (const s of allScores) {
+    if (!recentIds.has(s.game_id) || !s.words) continue;
+    const tokens = String(s.words).split(/[\s+,]+/).filter(Boolean);
+    for (const t of tokens) {
+      const w = t.toLowerCase().replace(/[^a-z]/g, "");
+      if (w.length >= 2) blocked.add(w);
+    }
+  }
+  return blocked;
+}
+
+/**
  * Hot Swap: persist the card a player is carrying into their next hand.
  * Pass `card = null` to clear the entry. Stored as `banked_cards[slackId]`
  * on the game record so the next-hand deal can prepend it and clear.

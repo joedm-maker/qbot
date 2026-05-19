@@ -430,6 +430,22 @@ export async function saveScore(userId, game_id, hand, wordsInput, chosen, butto
     }
   }
 
+  // Qlander singleton rule — reject any word the player already played in
+  // their last 20 fully-complete games. Blocklist was seeded at game-create
+  // or join time and stored as game.qlander_blocklist[player_id].
+  const gameForRules = await db.getGame(game_id);
+  if (gameForRules.game_type === "Qlander" && wordsInput.trim()) {
+    const blocked = new Set(gameForRules.qlander_blocklist?.[userId] || []);
+    const repeats = [];
+    for (const w of words) {
+      const norm = w.toLowerCase().replace(/[^a-z]/g, "");
+      if (norm && blocked.has(norm)) repeats.push(w);
+    }
+    if (repeats.length) {
+      return validationError(`Qlander: you've already played ${repeats.join(", ")} in your last 20 games.`);
+    }
+  }
+
   // Quickler timer validation — check if submission is within the 30s window
   const gameForTimer = await db.getGame(game_id);
   if (gameForTimer.game_type === "Quickler" && gameForTimer.quickler_timer_started_at && gameForTimer.quickler_timer_hand === hand && !isEdit) {

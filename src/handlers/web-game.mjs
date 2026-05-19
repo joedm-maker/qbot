@@ -82,7 +82,12 @@ async function getMe(userId) {
 
   const scores = await db.getScoresForGame(game.game_id);
   const round = findCurrentRound(scores, userId, game);
-  return jsonResp(200, { game, scores, round, joined: true });
+  // Qlander: scope the blocklist response to just the current player —
+  // other players' past words aren't relevant and bloat the payload.
+  const gamePayload = game.qlander_blocklist
+    ? { ...game, qlander_blocklist: { [userId]: game.qlander_blocklist[userId] || [] } }
+    : game;
+  return jsonResp(200, { game: gamePayload, scores, round, joined: true });
 }
 
 async function joinLive(userId) {
@@ -117,6 +122,17 @@ async function joinLive(userId) {
     const dealSize = dealSizeForHand(game.game_type, startHand, 0);
     const { cards } = dealFromPool([], dealSize);
     await db.recordDeal(game.game_id, userId, startHand, cards);
+  }
+
+  // Qlander: seed the joiner's personal blocklist from their last 20
+  // fully-complete games so the singleton rule applies from their first
+  // submission.
+  if (game.game_type === "Qlander") {
+    const set = await db.computeQlanderBlocklist(userId, 20);
+    const existing = game.qlander_blocklist || {};
+    await db.updateGameAttr(game.game_id, {
+      qlander_blocklist: { ...existing, [userId]: [...set] },
+    });
   }
 
   const refreshed = await db.getGame(game.game_id);
