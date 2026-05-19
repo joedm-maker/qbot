@@ -90,6 +90,26 @@ Resources:
                 Action: lambda:InvokeFunction
                 Resource: !GetAtt QuicklerTimerFunction.Arn
 
+  GauntletTimerSchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: qbim-gauntlet-scheduler-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeGauntletTimerLambda
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt GauntletTimerFunction.Arn
+
   VoteTimerSchedulerRole:
     Type: AWS::IAM::Role
     Properties:
@@ -132,6 +152,8 @@ Resources:
         Variables:
           QUICKLER_TIMER_FUNCTION_ARN: !GetAtt QuicklerTimerFunction.Arn
           QUICKLER_TIMER_ROLE_ARN: !GetAtt QuicklerTimerSchedulerRole.Arn
+          GAUNTLET_TIMER_FUNCTION_ARN: !GetAtt GauntletTimerFunction.Arn
+          GAUNTLET_TIMER_ROLE_ARN: !GetAtt GauntletTimerSchedulerRole.Arn
           VOTE_TIMER_FUNCTION_ARN: !GetAtt VoteTimerFunction.Arn
           VOTE_TIMER_ROLE_ARN: !GetAtt VoteTimerSchedulerRole.Arn
           SCORE_WORKER_FUNCTION_NAME: !Ref ScoreWorkerFunction
@@ -155,12 +177,14 @@ Resources:
                 - scheduler:DeleteSchedule
               Resource:
                 - !Sub "arn:aws:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/default/qbim-timer-*"
+                - !Sub "arn:aws:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/default/qbim-gauntlet-*"
                 - !Sub "arn:aws:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/default/qbim-vote-*"
         - Statement:
             - Effect: Allow
               Action: iam:PassRole
               Resource:
                 - !GetAtt QuicklerTimerSchedulerRole.Arn
+                - !GetAtt GauntletTimerSchedulerRole.Arn
                 - !GetAtt VoteTimerSchedulerRole.Arn
         - LambdaInvokePolicy:
             FunctionName: !Ref ScoreWorkerFunction
@@ -309,6 +333,26 @@ Resources:
             TableName: !Ref PlayersTable
         - DynamoDBCrudPolicy:
             TableName: !Ref AutoQTable
+
+  # ---------- Gauntlet Race Timer Lambda ----------
+  GauntletTimerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: qbim-gauntlet-timer
+      Handler: src/handlers/gauntlet-timer.handler
+      CodeUri: .
+      Timeout: 30
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GamesTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ScoresTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PlayersTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AutoQTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DictionaryTable
 
   # ---------- Vote Timer Lambda ----------
   VoteTimerFunction:

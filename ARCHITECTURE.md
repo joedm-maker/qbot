@@ -110,7 +110,7 @@ All state is in DynamoDB. No in-memory state between Lambda invocations. The Sla
 9. `qbim_admin_*` actions → `score-entry.mjs`
 
 ### Digital deck
-All three game types (QBIM, Quickler, AutoQ) deal `hand + 3` cards per round (6 for Hand 3, 7 for Hand 4, etc.) — standard Quiddler rule. The extra 3 are the "discards" players don't have to score with. The single source of truth is `cards.dealSizeForHand(gameType, hand, mulligans)`.
+All game types (QBIM, Quickler, Hot Swap, Qlander, Gauntlet, AutoQ) deal `hand + 3` cards per round (6 for Hand 3, 7 for Hand 4, etc.) — standard Quiddler rule. The extra 3 are the "discards" players don't have to score with. The single source of truth is `cards.dealSizeForHand(gameType, hand, mulligans)`. Hot Swap, Qlander, and Gauntlet build on QBIM's basic rules with bank-a-discard, word-singleton, and pre-dealt-grid mechanics respectively.
 
 Games opt into in-app dealing via `game.deck_type = "Digital"` (default: `"Physical"`, scores only). Digital games persist:
 - `game.dealt_cards[playerId#hand]` — what the player currently holds
@@ -126,7 +126,7 @@ Games opt into in-app dealing via `game.deck_type = "Digital"` (default: `"Physi
 | `game_id` | String (PK) | UUID or `hist-NNN` for imports |
 | `game_date` | String (GSI PK) | ISO date `YYYY-MM-DD` |
 | `game_number` | Number (GSI SK) | Sequential per day |
-| `game_type` | String | "QBIM" or "Quickler" |
+| `game_type` | String | "QBIM", "Quickler", "HotSwap", "Qlander", "Gauntlet" |
 | `status` | String | "OPEN" → "ACTIVE" → "COMPLETE" |
 | `players` | List<String> | Current player Slack IDs (drops removed) |
 | `player_start_hands` | Map<String, Number> | Player ID → hand they joined at (3 for originals) |

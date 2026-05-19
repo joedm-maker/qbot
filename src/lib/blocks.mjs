@@ -362,7 +362,7 @@ export function endGameModal(gameId) {
  * it as a no-op.
  */
 export function handScoreModal(gameId, hand, buttonPressedAt = null, opts = {}) {
-  const { wordsInput = "", testResult = null, invalidWords = null, chosen = null, bankOptions = null, dealtCards = null } = opts;
+  const { wordsInput = "", testResult = null, invalidWords = null, chosen = null, bankOptions = null, dealtCards = null, bankedFromLastHand = null } = opts;
   const inRejection = Array.isArray(invalidWords) && invalidWords.length > 0;
 
   const wordsField = {
@@ -394,9 +394,20 @@ export function handScoreModal(gameId, hand, buttonPressedAt = null, opts = {}) 
   // shows the per-hand button, not the cards, so without this the player
   // can't see what they have until they reach the modal.
   if (Array.isArray(dealtCards) && dealtCards.length > 0) {
+    // Hot Swap: bold + 🪙 the card that was carried in from last hand's bank.
+    // Multiple copies of the same letter are possible (e.g. two N's) — only
+    // mark the first match so the visual is unambiguous.
+    let marked = false;
+    const formatted = dealtCards.map((c) => {
+      if (bankedFromLastHand && !marked && c === bankedFromLastHand) {
+        marked = true;
+        return `*${c}* 🪙`;
+      }
+      return c;
+    });
     modalBlocks.push({
       type: "section",
-      text: { type: "mrkdwn", text: `🎴 *Your hand:* ${dealtCards.join("  ·  ")}` },
+      text: { type: "mrkdwn", text: `🎴 *Your hand:* ${formatted.join("  ·  ")}` },
     });
   }
 

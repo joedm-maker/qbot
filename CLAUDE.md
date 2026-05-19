@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Slack bot for tracking QBIM/Quickler (Quiddler variant) scores at Design Master. Node.js 20 ESM on AWS Lambda, API Gateway, DynamoDB, deployed with AWS SAM. Companion React dashboard lives in the sibling `qbim-stats-dashboard/` repo and consumes the `/stats/*` endpoints from this Lambda.
+Slack bot for tracking QBIM/Quickler/Hot Swap/Qlander/Gauntlet (Quiddler variants) scores at Design Master, plus the AutoQ solo mode. Node.js 20 ESM on AWS Lambda, API Gateway, DynamoDB, deployed with AWS SAM. Companion React dashboard lives in the sibling `qbim-stats-dashboard/` repo and consumes the `/stats/*` endpoints from this Lambda.
 
 See `ARCHITECTURE.md` for the full component breakdown, data models, and flow diagrams — it is kept current and should be the first stop for "how does X work?" questions.
 

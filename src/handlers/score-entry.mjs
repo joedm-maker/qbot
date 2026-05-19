@@ -84,9 +84,12 @@ async function handleAction(payload) {
       if (gameForModal?.game_type === "HotSwap" && gameForModal.deck_type === "Digital" && hand < 10 && dealtCards?.length > 0) {
         bankOptions = [...new Set(dealtCards)];
       }
+      // Hot Swap: surface "carried from last hand" so the player can see
+      // which card came from their previous bank.
+      const bankedFromLastHand = gameForModal?.banked_consumed?.[`${payload.user.id}#${hand}`] || null;
       await slack().views.open({
         trigger_id: payload.trigger_id,
-        view: blocks.handScoreModal(gameId, hand, buttonPressedAt, { wordsInput, bankOptions, dealtCards }),
+        view: blocks.handScoreModal(gameId, hand, buttonPressedAt, { wordsInput, bankOptions, dealtCards, bankedFromLastHand }),
       });
       break;
     }
@@ -308,9 +311,9 @@ async function handleViewSubmission(payload) {
  * the modal can surface the rejection inline. saveScore re-runs the
  * same check as defense-in-depth for the async worker path.
  */
-async function checkQlanderRepeats(userId, game_id, hand, wordsInput) {
+async function checkQlanderRepeats(userId, game_id, hand, wordsInput, game = null) {
   if (!wordsInput.trim()) return null;
-  const game = await db.getGame(game_id);
+  if (!game) game = await db.getGame(game_id);
   if (game.game_type !== "Qlander") return null;
   const blocked = new Set(game.qlander_blocklist?.[userId] || []);
   const priorScores = await db.getScoresForGame(game_id);
@@ -370,7 +373,7 @@ async function submitScore(payload) {
 
   // Qlander singleton rule — cheap local check before the dictionary
   // round-trip. Inline-error so the modal stays open with the input.
-  const repeats = await checkQlanderRepeats(userId, game_id, hand, wordsInput);
+  const repeats = await checkQlanderRepeats(userId, game_id, hand, wordsInput, gameForMax);
   if (repeats) {
     return validationError(`Qlander: you've already played ${repeats.join(", ")} (last 20 games or earlier this game).`);
   }
@@ -632,12 +635,16 @@ export async function saveScore(userId, game_id, hand, wordsInput, chosen, butto
   }
 
   if (game.game_type === "Gauntlet") {
-    // Gauntlet: hands are played in any order at each player's pace. Skip
-    // the linear per-hand star award and the "deal the next hand" flow.
-    // Instead check whether every eligible player has now submitted all 8
-    // of their hands — if yes, transition to review (the Finalize Game
-    // button on /play takes it from there). Stars get computed once at
-    // finalize time, not per-hand.
+    // Gauntlet: hands play in any order at each player's pace. Skip the
+    // linear per-hand star award and "deal next hand" flow. Stars are
+    // computed once at finalize time.
+    //
+    // Race-clock semantics:
+    //   - When the first player finishes their last hand, schedule a 60s
+    //     EventBridge timer. Other players race to finish; on expiry,
+    //     gauntlet-timer.mjs auto-zeros any unsubmitted hand and finalizes.
+    //   - If everyone finishes before the timer fires, cancel the timer
+    //     and transition straight to review so the Finalize button activates.
     const allScores = await db.getScoresForGame(game_id);
     const handsByPlayer = new Map();
     for (const s of allScores) {
@@ -646,15 +653,40 @@ export async function saveScore(userId, game_id, hand, wordsInput, chosen, butto
     }
     const ALL_HANDS = [3, 4, 5, 6, 7, 8, 9, 10];
     const startHands = game.player_start_hands || {};
-    const everyoneDone = game.players.every((pid) => {
+    const isPlayerDone = (pid) => {
       const required = ALL_HANDS.filter((h) => (startHands[pid] || 3) <= h);
       const got = handsByPlayer.get(pid) || new Set();
       return required.every((h) => got.has(h));
-    });
+    };
+    const everyoneDone = game.players.every(isPlayerDone);
+
     if (everyoneDone && !game.review_started_at) {
+      // Race winner + every other player finished within the window —
+      // cancel the timer if still pending, then jump to review.
+      if (game.gauntlet_race_schedule_name) {
+        const { deleteGauntletTimer } = await import("../lib/gauntlet.mjs");
+        try { await deleteGauntletTimer(game.gauntlet_race_schedule_name); } catch (err) { console.warn("Gauntlet timer cleanup:", err.message); }
+      }
       await db.updateGameStatus(game_id, "ACTIVE", {
         review_started_at: new Date().toISOString(),
+        gauntlet_race_started_at: null,
+        gauntlet_race_schedule_name: null,
       });
+    } else if (isPlayerDone(userId) && !game.gauntlet_race_started_at && !game.review_started_at) {
+      // This player just became the first finisher — start the 60s race.
+      const scheduleName = `qbim-gauntlet-${game_id}`.replace(/[^a-zA-Z0-9_-]/g, "-");
+      const { createGauntletTimer } = await import("../lib/gauntlet.mjs");
+      try {
+        await createGauntletTimer(scheduleName, game_id);
+        await db.updateGameAttr(game_id, {
+          gauntlet_race_started_at: new Date().toISOString(),
+          gauntlet_race_schedule_name: scheduleName,
+        });
+      } catch (err) {
+        // Scheduler failure shouldn't block the submission — fall back
+        // to manual Finalize via the existing button.
+        console.warn("Gauntlet timer create failed:", err.message);
+      }
     }
   } else {
     // Check if all eligible players submitted this hand
@@ -842,16 +874,21 @@ export async function autoAwardStars(game, hand, handScores, announce = true) {
       const dealSize = dealSizeForHand(game.game_type, nextHand, 0);
       const banked = game.game_type === "HotSwap" ? (game.banked_cards || {}) : {};
       const dealVariant = getDeckVariant(game);
+      const consumed = { ...(game.banked_consumed || {}) };
       for (const pid of nextEligible) {
         const carried = banked[pid] || null;
         const freshSize = carried ? Math.max(0, dealSize - 1) : dealSize;
         const { cards } = dealFromPool([], freshSize, dealVariant);
         const finalCards = carried ? [carried, ...cards] : cards;
         await db.recordDeal(game.game_id, pid, nextHand, finalCards);
+        // Record which card was the carry-over so the next hand's modal
+        // (Slack + /play) can highlight it as a banked card from last hand.
+        if (carried) consumed[`${pid}#${nextHand}`] = carried;
       }
-      // Clear banked cards once consumed for this hand transition.
+      // Clear banked cards once consumed for this hand transition; persist
+      // the consumed map so subsequent hand-opens know what was carried.
       if (game.game_type === "HotSwap" && Object.keys(banked).length > 0) {
-        await db.updateGameAttr(game.game_id, { banked_cards: {} });
+        await db.updateGameAttr(game.game_id, { banked_cards: {}, banked_consumed: consumed });
       }
     }
 
