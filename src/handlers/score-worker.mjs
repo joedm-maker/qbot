@@ -11,7 +11,7 @@
  *
  * Payload shape:
  *   { mode: "regular" | "autoq", userId, game_id, hand, wordsInput, chosen,
- *     buttonPressedAt?, dealtCards? }
+ *     buttonPressedAt?, dealtCards?, bankCard? }
  */
 import { validateWords } from "../lib/dictionary.mjs";
 import { saveScore } from "./score-entry.mjs";
@@ -24,7 +24,7 @@ export async function handler(event) {
     const {
       mode = "regular",
       userId, game_id, hand, wordsInput, chosen,
-      buttonPressedAt, dealtCards, validated,
+      buttonPressedAt, dealtCards, validated, bankCard,
     } = event;
 
     // Dictionary validation — skip if already validated by the caller
@@ -68,7 +68,7 @@ export async function handler(event) {
       await saveAutoQScore(userId, game_id, hand, wordsInput || "", chosen, dealtCards);
       await renderHome(userId);
     } else {
-      await saveScore(userId, game_id, hand, wordsInput || "", chosen, buttonPressedAt);
+      await saveScore(userId, game_id, hand, wordsInput || "", chosen, buttonPressedAt, bankCard);
     }
     return { ok: true };
   } catch (err) {

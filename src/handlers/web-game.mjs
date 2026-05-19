@@ -291,7 +291,7 @@ async function takeMulligan(userId, event) {
 async function submitScore(userId, event) {
   let body;
   try { body = JSON.parse(event.body || "{}"); } catch { return jsonResp(400, { error: "Invalid JSON" }); }
-  const { game_id, hand, words, chosen, button_pressed_at } = body;
+  const { game_id, hand, words, chosen, button_pressed_at, bank_card } = body;
   if (!game_id || !Number.isInteger(hand) || hand < 3 || hand > 10) {
     return jsonResp(400, { error: "game_id and hand (3-10) required" });
   }
@@ -314,7 +314,7 @@ async function submitScore(userId, event) {
     await invokeScoreWorker({
       mode: "regular", userId, game_id, hand, wordsInput: "",
       chosen: { score: 0, cards: 0, breakdown: "—" },
-      buttonPressedAt: button_pressed_at, validated: true,
+      buttonPressedAt: button_pressed_at, validated: true, bankCard: bank_card ?? null,
     });
     return jsonResp(200, { status: "submitted", raw_score: 0, breakdown: "—", words: "" });
   }
@@ -361,7 +361,7 @@ async function submitScore(userId, event) {
   const chosenOption = chosen || options[0];
   await invokeScoreWorker({
     mode: "regular", userId, game_id, hand, wordsInput,
-    chosen: chosenOption, buttonPressedAt: button_pressed_at, validated: true,
+    chosen: chosenOption, buttonPressedAt: button_pressed_at, validated: true, bankCard: bank_card ?? null,
   });
   return jsonResp(200, {
     status: "submitted",

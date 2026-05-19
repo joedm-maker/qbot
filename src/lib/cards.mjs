@@ -16,21 +16,36 @@
  */
 
 /**
- * Get the hand range for a game type.
+ * Get the hand range for a game type. All four game types (QBIM,
+ * Quickler, AutoQ, HotSwap) use hands 3-10.
  */
 export function getHandRange(gameType) {
-  // QBIM, Quickler, and AutoQ all use hands 3-10.
   return [3, 4, 5, 6, 7, 8, 9, 10];
 }
 
 /**
- * How many cards to deal for a given hand. All three game types (QBIM,
- * Quickler, AutoQ) deal `hand + 3` cards — the extra 3 are "discards" the
- * player doesn't need to score with (standard Quiddler rule). Mulligans
- * subtract from the dealt count one card at a time.
+ * How many cards to deal for a given hand. Every game type deals
+ * `hand + 3` cards — the extra 3 are "discards" the player doesn't need
+ * to score with (standard Quiddler rule). Mulligans subtract from the
+ * dealt count one card at a time.
+ *
+ * HotSwap follows the same hand+3 rule. The hot-swap mechanic (banking
+ * one discard between hands) is a separate layer that injects the
+ * carried card into the next hand's deal as a replacement, not as an
+ * extra — total cards-per-hand stays at hand+3.
  */
 export function dealSizeForHand(gameType, hand, mulligans = 0) {
   return hand + 3 - mulligans;
+}
+
+/**
+ * All recognized game types. Used to validate game_type inputs from
+ * Slack modals and web endpoints.
+ */
+export const GAME_TYPES = ["QBIM", "Quickler", "AutoQ", "HotSwap"];
+
+export function isValidGameType(t) {
+  return GAME_TYPES.includes(t);
 }
 
 const SUPERSCRIPT = { "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴", "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹" };

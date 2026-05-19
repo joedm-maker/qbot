@@ -515,6 +515,24 @@ export async function recordDeal(gameId, slackId, hand, cards) {
   }));
 }
 
+/**
+ * Hot Swap: persist the card a player is carrying into their next hand.
+ * Pass `card = null` to clear the entry. Stored as `banked_cards[slackId]`
+ * on the game record so the next-hand deal can prepend it and clear.
+ */
+export async function setBankedCard(gameId, slackId, card) {
+  const game = await getGame(gameId);
+  const banked = { ...(game?.banked_cards || {}) };
+  if (card == null) delete banked[slackId];
+  else banked[slackId] = card;
+  await ddb.send(new UpdateCommand({
+    TableName: GAMES_TABLE,
+    Key: { game_id: gameId },
+    UpdateExpression: "SET banked_cards = :b",
+    ExpressionAttributeValues: { ":b": banked },
+  }));
+}
+
 export async function updateGameAttr(gameId, attrs) {
   let updateExpr = "SET";
   const names = {};

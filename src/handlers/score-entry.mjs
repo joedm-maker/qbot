@@ -2,7 +2,7 @@ import { verifySlackSignature, parseSlackBody } from "../lib/verify.mjs";
 import { slack, CHANNEL, dmAllPlayers, dmUser } from "../lib/slack.mjs";
 import * as db from "../lib/db.mjs";
 import * as blocks from "../lib/blocks.mjs";
-import { getScoreOptions, getHandRange, formatWordsWithPoints, normalizeWords, dealSizeForHand } from "../lib/cards.mjs";
+import { getScoreOptions, getHandRange, formatWordsWithPoints, normalizeWords, dealSizeForHand, CARD_VALUES } from "../lib/cards.mjs";
 import { renderHome, resolveNames, aggregateScores, findCurrentRound, ADMIN_USER } from "../lib/home.mjs";
 import { createQuicklerTimer, deleteQuicklerTimer } from "../lib/quickler.mjs";
 import { validateWords } from "../lib/dictionary.mjs";
@@ -401,7 +401,7 @@ async function confirmScore(payload) {
 /**
  * Save the score record and handle game state transitions.
  */
-export async function saveScore(userId, game_id, hand, wordsInput, chosen, buttonPressedAt = null) {
+export async function saveScore(userId, game_id, hand, wordsInput, chosen, buttonPressedAt = null, bankCard = null) {
   const rawScore = chosen.score;
   const breakdown = chosen.breakdown;
 
@@ -483,6 +483,31 @@ export async function saveScore(userId, game_id, hand, wordsInput, chosen, butto
     await db.updateGameStatus(game_id, "ACTIVE", {
       locked_at: new Date().toISOString(),
     });
+  }
+
+  // Hot Swap: persist (or clear) the banked card. Skipped for edits and
+  // for hand 10 (no next deal). Digital validates that the chosen card
+  // is actually in the player's discards for this hand; Physical accepts
+  // any valid card label (honor system — server has no deal record).
+  if (game.game_type === "HotSwap" && !isEdit && hand < 10) {
+    if (bankCard != null) {
+      if (game.deck_type === "Digital") {
+        const dealt = game.dealt_cards?.[`${userId}#${hand}`] || [];
+        const usedCards = breakdown.split(/\s+/).flatMap((seg) => seg.split("-")).filter(Boolean);
+        const remaining = new Map();
+        for (const c of dealt) remaining.set(c, (remaining.get(c) || 0) + 1);
+        for (const c of usedCards) remaining.set(c, (remaining.get(c) || 0) - 1);
+        if ((remaining.get(bankCard) || 0) <= 0) {
+          return validationError(`Can't bank ${bankCard} — not in your discards.`);
+        }
+      } else if (!CARD_VALUES[bankCard]) {
+        return validationError(`Can't bank ${bankCard} — not a valid card.`);
+      }
+      await db.setBankedCard(game_id, userId, bankCard);
+    } else {
+      // Player chose not to bank — clear any stale entry from a prior submit.
+      await db.setBankedCard(game_id, userId, null);
+    }
   }
 
   // Quickler: start 30s timer on first submission for a hand
@@ -678,14 +703,24 @@ export async function autoAwardStars(game, hand, handScores, announce = true) {
     } else if (game.deck_type === "Digital") {
       // Digital deck: each new hand reshuffles, so deal next-hand cards for
       // every eligible player from a freshly shuffled full 118-card deck.
+      // Hot Swap: if a player banked a card last hand, prepend it and deal
+      // one fewer fresh card so the total stays at hand+3.
       const { dealFromPool } = await import("../lib/autoq-deck.mjs");
       const nextHand = hand + 1;
       const startHands = game.player_start_hands || {};
       const nextEligible = game.players.filter((pid) => (startHands[pid] || gameHands[0]) <= nextHand);
       const dealSize = dealSizeForHand(game.game_type, nextHand, 0);
+      const banked = game.game_type === "HotSwap" ? (game.banked_cards || {}) : {};
       for (const pid of nextEligible) {
-        const { cards } = dealFromPool([], dealSize);
-        await db.recordDeal(game.game_id, pid, nextHand, cards);
+        const carried = banked[pid] || null;
+        const freshSize = carried ? Math.max(0, dealSize - 1) : dealSize;
+        const { cards } = dealFromPool([], freshSize);
+        const finalCards = carried ? [carried, ...cards] : cards;
+        await db.recordDeal(game.game_id, pid, nextHand, finalCards);
+      }
+      // Clear banked cards once consumed for this hand transition.
+      if (game.game_type === "HotSwap" && Object.keys(banked).length > 0) {
+        await db.updateGameAttr(game.game_id, { banked_cards: {} });
       }
     }
 
