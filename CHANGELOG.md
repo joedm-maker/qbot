@@ -1,3 +1,15 @@
+## v0.2.3 — 2026-05-19
+
+### Added
+- **Hot Swap game variant — backend.** `cards.mjs` exposes `GAME_TYPES` + `isValidGameType`; HotSwap uses the standard H3-H10 / hand+3 rules. New Slack game-creation option. `db.setBankedCard(gameId, slackId, card | null)` persists/clears the carried card on `game.banked_cards`. `saveScore` accepts an optional `bankCard`: Digital validates the card is in the player's discards (dealt − used multiset), Physical accepts any valid card label (honor system). Next-hand deal for Digital prepends the banked card and deals one fewer fresh card; banked map cleared once consumed.
+- `bank_card` field threaded through the `/scores` endpoint and the score-worker payload.
+
+### Known gaps (deferred for Phase 2)
+- No Slack score-entry banking dropdown — Slack players can't bank from Slack yet.
+- Physical Hot Swap has no server-side tracking.
+
+---
+
 ## v0.2.2 — 2026-05-18
 
 ### Added
