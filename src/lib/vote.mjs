@@ -12,7 +12,7 @@
 import { SchedulerClient, CreateScheduleCommand, DeleteScheduleCommand } from "@aws-sdk/client-scheduler";
 import * as db from "./db.mjs";
 import { slack, dmUser } from "./slack.mjs";
-import { getScoreOptions } from "./cards.mjs";
+import { getScoreOptions, getDeckVariant } from "./cards.mjs";
 
 const scheduler = new SchedulerClient({});
 
@@ -37,7 +37,7 @@ export async function startWordVote({ userId, game_id, hand, words, invalid_word
 
   let resolvedChosen = chosen;
   if (!resolvedChosen) {
-    resolvedChosen = computeChosen(words, hand, await db.getMulliganCount(game_id, userId, hand));
+    resolvedChosen = computeChosen(words, hand, await db.getMulliganCount(game_id, userId, hand), getDeckVariant(game));
   }
 
   const vote = {
@@ -243,9 +243,9 @@ export async function resolveVote(vote, approved) {
 
 // ── Compute chosen score option for vote record ───────
 
-export function computeChosen(wordsInput, hand, mulligans) {
+export function computeChosen(wordsInput, hand, mulligans, deckVariant = "Quiddler") {
   const maxCards = hand - mulligans;
-  const { options } = getScoreOptions(wordsInput, maxCards);
+  const { options } = getScoreOptions(wordsInput, maxCards, deckVariant);
   if (options.length === 0) return null;
   return options.sort((a, b) => b.score - a.score)[0];
 }

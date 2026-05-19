@@ -16,10 +16,10 @@
  */
 import * as db from "../lib/db.mjs";
 import { verifyJwt } from "../lib/jwt.mjs";
-import { getScoreOptions, dealSizeForHand } from "../lib/cards.mjs";
+import { getScoreOptions, dealSizeForHand, getDeckVariant } from "../lib/cards.mjs";
 import { validateWords } from "../lib/dictionary.mjs";
 import { findCurrentRound } from "../lib/home.mjs";
-import { dealFromPool, filterOptionsAgainstDealt } from "../lib/autoq-deck.mjs";
+import { dealFromPool, filterOptionsAgainstDealt, getDeckSize } from "../lib/autoq-deck.mjs";
 import { invokeScoreWorker, finalizeGame } from "./score-entry.mjs";
 import { createNewGame, findActiveGameForUser, notifyRegulars, postLobbyMessage } from "./game-flow.mjs";
 import { deleteQuicklerTimer } from "../lib/quickler.mjs";
@@ -121,15 +121,16 @@ async function joinLive(userId) {
   // Gauntlet: deal ALL remaining hands (startHand..10) at once so the
   // joiner sees the same 4x2 grid as the host.
   if (game.deck_type === "Digital") {
+    const variant = getDeckVariant(game);
     if (game.game_type === "Gauntlet") {
       for (let h = startHand; h <= 10; h++) {
         const dealSize = dealSizeForHand(game.game_type, h, 0);
-        const { cards } = dealFromPool([], dealSize);
+        const { cards } = dealFromPool([], dealSize, variant);
         await db.recordDeal(game.game_id, userId, h, cards);
       }
     } else {
       const dealSize = dealSizeForHand(game.game_type, startHand, 0);
-      const { cards } = dealFromPool([], dealSize);
+      const { cards } = dealFromPool([], dealSize, variant);
       await db.recordDeal(game.game_id, userId, startHand, cards);
     }
   }
@@ -164,12 +165,17 @@ async function createGame(userId, event) {
     return jsonResp(400, { error: "game_type must be QBIM or Quickler" });
   }
   const deckType = body.deck_type === "Digital" ? "Digital" : "Physical";
+  const deckVariant = body.deck_variant === "Power" ? "Power" : "Quiddler";
+  // Power deck requires Digital play for now (no physical Power cards exist).
+  if (deckVariant === "Power" && deckType !== "Digital") {
+    return jsonResp(400, { error: "Power deck requires deck_type: Digital" });
+  }
   // Match the Slack qbim_start_game_submit guard — one active game per user.
   const existing = await findActiveGameForUser(userId);
   if (existing) {
     return jsonResp(409, { error: `You already have an active game (#${existing.game_number}). Leave or end it first.` });
   }
-  const game = await createNewGame(userId, gameType, deckType);
+  const game = await createNewGame(userId, gameType, deckType, deckVariant);
   // Slack-side fanout (DM host + notify regulars) — best-effort, doesn't gate
   // the web response.
   postLobbyMessage(game).catch((err) => console.warn("postLobbyMessage:", err.message));
@@ -293,7 +299,8 @@ async function takeMulligan(userId, event) {
     const mPrior = await db.getMulliganCount(game_id, userId, hand);
     const target = dealSizeForHand(game.game_type, hand, mPrior + 1);
     const seen = game.hand_seen_cards?.[`${userId}#${hand}`] || [];
-    const poolRemaining = 118 - seen.length;
+    const variant = getDeckVariant(game);
+    const poolRemaining = getDeckSize(variant) - seen.length;
     if (poolRemaining < target) {
       return jsonResp(409, { error: `Deck depleted — only ${poolRemaining} card${poolRemaining === 1 ? "" : "s"} left, need ${target}. Mulligan not counted.` });
     }
@@ -310,7 +317,8 @@ async function takeMulligan(userId, event) {
     const mulligans = await db.getMulliganCount(game_id, userId, hand);
     const cardCount = dealSizeForHand(game.game_type, hand, mulligans);
     const seen = game.hand_seen_cards?.[`${userId}#${hand}`] || [];
-    const { cards } = dealFromPool(seen, cardCount);
+    const variant = getDeckVariant(game);
+    const { cards } = dealFromPool(seen, cardCount, variant);
     await db.recordDeal(game_id, userId, hand, cards);
   }
   const refreshed = await db.getGame(game_id);
@@ -356,11 +364,12 @@ async function submitScore(userId, event) {
   // Digital games filter options to those actually formable from the player's
   // dealt cards; Physical games fall back to the cards-count check.
   let options, invalid, tooShort;
+  const variant = getDeckVariant(game);
   const dealtCards = game.deck_type === "Digital" ? game.dealt_cards?.[`${userId}#${hand}`] : null;
   if (dealtCards) {
-    ({ options, invalid, tooShort } = filterOptionsAgainstDealt(wordsInput, maxCards, dealtCards));
+    ({ options, invalid, tooShort } = filterOptionsAgainstDealt(wordsInput, maxCards, dealtCards, variant));
   } else {
-    ({ options, invalid, tooShort } = getScoreOptions(wordsInput, maxCards));
+    ({ options, invalid, tooShort } = getScoreOptions(wordsInput, maxCards, variant));
   }
 
   if (invalid.length) {

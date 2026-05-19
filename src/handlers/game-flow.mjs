@@ -5,7 +5,8 @@ import * as db from "../lib/db.mjs";
 import * as blocks from "../lib/blocks.mjs";
 import { renderHome, resolveNames, aggregateScores } from "../lib/home.mjs";
 import { deleteQuicklerTimer } from "../lib/quickler.mjs";
-import { dealFromPool } from "../lib/autoq-deck.mjs";
+import { dealFromPool, getDeckSize } from "../lib/autoq-deck.mjs";
+import { getDeckVariant } from "../lib/cards.mjs";
 import { getHandRange, dealSizeForHand } from "../lib/cards.mjs";
 
 export async function handler(event) {
@@ -102,11 +103,12 @@ async function handleAction(payload) {
       // Digital pool check BEFORE recording the mulligan — if the deck is
       // too depleted to deal the new (smaller) hand, reject and don't count
       // the mulligan against the player.
+      const gVariant = getDeckVariant(g);
       if (g.deck_type === "Digital") {
         const mPrior = await db.getMulliganCount(gameId, userId, hand);
         const target = dealSizeForHand(g.game_type, hand, mPrior + 1);
         const seen = g.hand_seen_cards?.[`${userId}#${hand}`] || [];
-        const poolRemaining = 118 - seen.length;
+        const poolRemaining = getDeckSize(gVariant) - seen.length;
         if (poolRemaining < target) {
           await renderHome(userId);
           break; // silent reject — UI re-renders with the button disabled
@@ -121,7 +123,7 @@ async function handleAction(payload) {
         const m = await db.getMulliganCount(gameId, userId, hand);
         const seen = g.hand_seen_cards?.[`${userId}#${hand}`] || [];
         const dealSize = dealSizeForHand(g.game_type, hand, m);
-        const { cards } = dealFromPool(seen, dealSize);
+        const { cards } = dealFromPool(seen, dealSize, gVariant);
         await db.recordDeal(gameId, userId, hand, cards);
       }
       await renderHome(userId);
@@ -138,12 +140,23 @@ async function handleViewSubmission(payload) {
     const gameType =
       payload.view.state.values.game_type_block.game_type.selected_option.value;
 
-    // AutoQ: open the opponent-count modal instead of creating a regular game
+    // Parse the deck choice. Three options encode (deckType, deckVariant):
+    //   physical-quiddler → Physical / Quiddler  (default; pre-existing behaviour)
+    //   digital-quiddler  → Digital / Quiddler
+    //   power             → Digital / Power      (Power always implies Digital)
+    const deckChoice = payload.view.state.values.deck_block?.deck?.selected_option?.value || "physical-quiddler";
+    let deckType = "Physical";
+    let deckVariant = "Quiddler";
+    if (deckChoice === "digital-quiddler") { deckType = "Digital"; }
+    else if (deckChoice === "power") { deckType = "Digital"; deckVariant = "Power"; }
+
+    // AutoQ: open the opponent-count modal instead of creating a regular game.
+    // Pass the deck variant through via the AutoQ modal's private_metadata.
     if (gameType === "AutoQ") {
       const { autoqStartModal } = await import("../lib/autoq-blocks.mjs");
       return respond(200, {
         response_action: "update",
-        view: autoqStartModal(),
+        view: autoqStartModal({ deckVariant }),
       });
     }
 
@@ -158,7 +171,7 @@ async function handleViewSubmission(payload) {
       });
     }
 
-    const game = await createNewGame(userId, gameType);
+    const game = await createNewGame(userId, gameType, deckType, deckVariant);
     await postLobbyMessage(game);
 
     // Notify regular players (>5 games) about the new game
@@ -254,7 +267,7 @@ function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
 
-export async function createNewGame(hostSlackId, gameType, deckType = "Physical") {
+export async function createNewGame(hostSlackId, gameType, deckType = "Physical", deckVariant = "Quiddler") {
   const today = todayStr();
   const maxGameNumber = await db.getMaxGameNumber();
   const gameNumber = maxGameNumber + 1;
@@ -264,20 +277,25 @@ export async function createNewGame(hostSlackId, gameType, deckType = "Physical"
   // tracking). Force the deck type accordingly.
   const finalDeckType = (gameType === "Qlander" || gameType === "Gauntlet") ? "Digital" : deckType;
 
+  // Power deck requires Digital play for now (no physical Power cards exist).
+  // Silently fall back to Quiddler if Physical is selected with Power — UI
+  // should prevent this, but enforce server-side too.
+  const finalDeckVariant = (deckVariant === "Power" && finalDeckType !== "Digital") ? "Quiddler" : deckVariant;
+
   const firstHand = getHandRange(gameType)[0];
   const initialDealSize = dealSizeForHand(gameType, firstHand, 0);
-  const initialDeal = finalDeckType === "Digital" ? dealFromPool([], initialDealSize).cards : null;
+  const initialDeal = finalDeckType === "Digital" ? dealFromPool([], initialDealSize, finalDeckVariant).cards : null;
 
   // Gauntlet: deal all 8 hands face-down at game start. Each hand is a
-  // fresh shuffle of the full 118-card deck (independent shuffles per
-  // hand, same as QBIM's per-hand reshuffle). Player picks any order in
-  // the 4x2 grid UI; selection happens client-side.
+  // fresh shuffle of the full deck (independent shuffles per hand, same
+  // as QBIM's per-hand reshuffle). Player picks any order in the 4x2 grid
+  // UI; selection happens client-side.
   const gauntletDealtCards = {};
   const gauntletHandSeen = {};
   if (gameType === "Gauntlet" && finalDeckType === "Digital") {
     for (let h = 3; h <= 10; h++) {
       const dealSize = dealSizeForHand(gameType, h, 0);
-      const { cards } = dealFromPool([], dealSize);
+      const { cards } = dealFromPool([], dealSize, finalDeckVariant);
       gauntletDealtCards[`${hostSlackId}#${h}`] = cards;
       gauntletHandSeen[`${hostSlackId}#${h}`] = [...cards];
     }
@@ -305,6 +323,7 @@ export async function createNewGame(hostSlackId, gameType, deckType = "Physical"
     status: "OPEN",
     game_type: gameType,
     deck_type: finalDeckType,
+    deck_variant: finalDeckVariant,
     game_number: gameNumber,
     host_slack_id: hostSlackId,
     players: [hostSlackId],
@@ -368,15 +387,16 @@ async function joinGame(gameId, slackId) {
   // Gauntlet: deal ALL remaining hands (startHand..10) up front so the
   // joiner sees the same 4x2 grid as the host.
   if (game.deck_type === "Digital") {
+    const variant = getDeckVariant(game);
     if (game.game_type === "Gauntlet") {
       for (let h = startHand; h <= 10; h++) {
         const dealSize = dealSizeForHand(game.game_type, h, 0);
-        const { cards } = dealFromPool([], dealSize);
+        const { cards } = dealFromPool([], dealSize, variant);
         await db.recordDeal(gameId, slackId, h, cards);
       }
     } else {
       const dealSize = dealSizeForHand(game.game_type, startHand, 0);
-      const { cards } = dealFromPool([], dealSize);
+      const { cards } = dealFromPool([], dealSize, variant);
       await db.recordDeal(gameId, slackId, startHand, cards);
     }
   }

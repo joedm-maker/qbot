@@ -1,23 +1,69 @@
 /**
- * AutoQ virtual Quiddler deck — 118 cards.
+ * Virtual card deck — physical composition + shuffling + dealing.
  *
- * Shuffled fresh per hand (not across hands).
+ * Two deck variants supported (composition matches cards.mjs DECKS):
+ *   - "Quiddler" — 118 cards
+ *   - "Power"    — 126 cards (adds CH×2, CK×2, +1 A, +1 B, +1 E, +1 P; see POWER_DECK.md)
+ *
+ * Deck is shuffled fresh per hand (not across hands).
  * Deals cards to human + bot players, validates submissions against dealt hand.
+ *
+ * All dealing/formatting functions accept an optional `deckVariant` parameter
+ * defaulting to `"Quiddler"`, so existing callsites that don't pass it behave
+ * exactly as before.
  */
-import { CARD_VALUES, getScoreOptions, allBreakdowns } from "./cards.mjs";
+import { getDeck, allBreakdowns } from "./cards.mjs";
 
-// Card frequencies in the physical Quiddler deck
-const CARD_FREQUENCIES = {
-  A: 10, B: 2, C: 2, D: 4, E: 12, F: 2, G: 4, H: 2, I: 8, J: 2,
-  K: 2, L: 4, M: 2, N: 6, O: 8, P: 2, Q: 2, R: 6, S: 4, T: 6,
-  U: 6, V: 2, W: 2, X: 2, Y: 4, Z: 2, QU: 2, IN: 2, ER: 2, CL: 2, TH: 2,
+// ── Deck composition ────────────────────────────────────
+
+const DECK_COMPOSITIONS = {
+  Quiddler: {
+    A: 10, B: 2, C: 2, D: 4, E: 12, F: 2, G: 4, H: 2, I: 8, J: 2,
+    K: 2, L: 4, M: 2, N: 6, O: 8, P: 2, Q: 2, R: 6, S: 4, T: 6,
+    U: 6, V: 2, W: 2, X: 2, Y: 4, Z: 2,
+    QU: 2, IN: 2, ER: 2, CL: 2, TH: 2,
+  },
+  Power: {
+    A: 11, B: 3, C: 2, D: 4, E: 13, F: 2, G: 4, H: 2, I: 8, J: 2,
+    K: 2, L: 4, M: 2, N: 6, O: 8, P: 3, Q: 2, R: 6, S: 4, T: 6,
+    U: 6, V: 2, W: 2, X: 2, Y: 4, Z: 2,
+    QU: 2, IN: 2, ER: 2, CL: 2, TH: 2, CH: 2, CK: 2,
+  },
 };
 
-// Expand frequency map into a 118-card array
-export const QUIDDLER_DECK = [];
-for (const [card, count] of Object.entries(CARD_FREQUENCIES)) {
-  for (let i = 0; i < count; i++) QUIDDLER_DECK.push(card);
+const DECK_CACHE = {};
+
+function buildDeck(variant) {
+  if (DECK_CACHE[variant]) return DECK_CACHE[variant];
+  const composition = DECK_COMPOSITIONS[variant] || DECK_COMPOSITIONS.Quiddler;
+  const arr = [];
+  for (const [card, count] of Object.entries(composition)) {
+    for (let i = 0; i < count; i++) arr.push(card);
+  }
+  DECK_CACHE[variant] = arr;
+  return arr;
 }
+
+// Backward-compat: the 118-card Quiddler array, materialised at module load.
+export const QUIDDLER_DECK = buildDeck("Quiddler");
+
+/**
+ * Total card count for a deck variant. Used by mulligan logic to determine
+ * whether the per-hand pool can still satisfy a re-deal at smaller size.
+ */
+export function getDeckSize(deckVariant = "Quiddler") {
+  return buildDeck(deckVariant).length;
+}
+
+/**
+ * Get the canonical (unshuffled) deck array for a variant. Used by AutoQ
+ * mulligan logic to construct a remaining-card pool.
+ */
+export function getDeckArray(deckVariant = "Quiddler") {
+  return [...buildDeck(deckVariant)];
+}
+
+// ── Shuffling + dealing ─────────────────────────────────
 
 /**
  * Fisher-Yates shuffle (in-place, returns the array).
@@ -34,8 +80,8 @@ export function shuffleDeck(deck) {
  * Shuffle a fresh deck and deal `handSize` cards to each of `playerCount` players.
  * Returns an array of card arrays, one per player.
  */
-export function dealForHand(playerCount, handSize) {
-  const deck = shuffleDeck([...QUIDDLER_DECK]);
+export function dealForHand(playerCount, handSize, deckVariant = "Quiddler") {
+  const deck = shuffleDeck([...buildDeck(deckVariant)]);
   const hands = [];
   for (let p = 0; p < playerCount; p++) {
     hands.push(deck.splice(0, handSize));
@@ -57,13 +103,13 @@ function multisetSubtract(deck, removed) {
 }
 
 /**
- * Deal `count` cards from the 118-card deck minus the player's `seenCards`
+ * Deal `count` cards from the deck minus the player's `seenCards`
  * (every card they've already been dealt this game — initial deals + previous
  * mulligan discards). Returns `{ cards, shortBy }`; `shortBy > 0` means the
  * pool has been depleted and the deal can't be filled.
  */
-export function dealFromPool(seenCards, count) {
-  const pool = multisetSubtract(QUIDDLER_DECK, seenCards || []);
+export function dealFromPool(seenCards, count, deckVariant = "Quiddler") {
+  const pool = multisetSubtract(buildDeck(deckVariant), seenCards || []);
   if (pool.length < count) {
     return { cards: pool.slice(0), shortBy: count - pool.length };
   }
@@ -87,22 +133,24 @@ export function validateCardsAgainstDealt(usedCards, dealtCards) {
   return true;
 }
 
+// ── Parsing helpers (private) ───────────────────────────
+
 /**
  * Parse a hyphenated word into explicit cards.
  */
-function parseExplicit(upper) {
+function parseExplicit(upper, values) {
   const cards = [];
   const invalid = [];
   for (const token of upper.split("-")) {
     if (!token) continue;
-    if (CARD_VALUES[token] !== undefined) cards.push(token);
+    if (values[token] !== undefined) cards.push(token);
     else invalid.push(token);
   }
   return { cards, invalid };
 }
 
-function scoreCards(cards) {
-  return cards.reduce((sum, c) => sum + (CARD_VALUES[c] || 0), 0);
+function scoreCards(cards, values) {
+  return cards.reduce((sum, c) => sum + (values[c] || 0), 0);
 }
 
 function cartesian(arrays) {
@@ -120,7 +168,9 @@ function cartesian(arrays) {
  * this function keeps ALL breakdowns and filters by what's actually in the dealt hand.
  * This ensures a player with an IN digraph card can play "ink" without hyphenating.
  */
-export function filterOptionsAgainstDealt(input, handSize, dealtCards) {
+export function filterOptionsAgainstDealt(input, handSize, dealtCards, deckVariant = "Quiddler") {
+  const { values } = getDeck(deckVariant);
+
   const cleaned = (input || "").replace(/[\s,+]+/g, " ").trim();
   if (!cleaned) return { options: [], invalid: [] };
 
@@ -135,12 +185,12 @@ export function filterOptionsAgainstDealt(input, handSize, dealtCards) {
     const upper = token.toUpperCase().trim();
     if (!upper) return [{ cards: [], raw: token }];
     if (upper.includes("-")) {
-      const { cards, invalid } = parseExplicit(upper);
+      const { cards, invalid } = parseExplicit(upper, values);
       allInvalid.push(...invalid);
       if (!invalid.length && cards.length < 2) tooShort.push(token);
       return [{ cards, raw: token }];
     }
-    const breakdowns = allBreakdowns(upper);
+    const breakdowns = allBreakdowns(upper, deckVariant);
     if (breakdowns.length === 0) {
       allInvalid.push(token);
       return [{ cards: [], raw: token }];
@@ -165,7 +215,7 @@ export function filterOptionsAgainstDealt(input, handSize, dealtCards) {
     if (allCards.length > handSize) continue;
     if (!validateCardsAgainstDealt(allCards, dealtCards)) continue;
 
-    const totalScore = scoreCards(allCards);
+    const totalScore = scoreCards(allCards, values);
     const breakdown = combo.map((w) => w.cards.join("-")).join("  ");
     rawOptions.push({ score: totalScore, cards: allCards.length, breakdown });
   }
@@ -190,18 +240,21 @@ export function filterOptionsAgainstDealt(input, handSize, dealtCards) {
   return { options, invalid: [], tooShort: [] };
 }
 
-/**
- * Format dealt cards with superscript point values.
- * e.g. ["A", "E", "QU", "N", "R"] → "a² e² qu⁹ n⁵ r⁵"
- */
+// ── Display ─────────────────────────────────────────────
+
 const SUPERSCRIPT = { "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴", "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹" };
 
 function toSuperscript(n) {
   return String(n).split("").map((d) => SUPERSCRIPT[d] || d).join("");
 }
 
-export function formatDealtCards(cards) {
+/**
+ * Format dealt cards with superscript point values.
+ * e.g. ["A", "E", "QU", "N", "R"] → "a² e² qu⁹ n⁵ r⁵"
+ */
+export function formatDealtCards(cards, deckVariant = "Quiddler") {
+  const { values } = getDeck(deckVariant);
   return cards
-    .map((c) => `${c.toLowerCase()}${toSuperscript(CARD_VALUES[c] || 0)}`)
+    .map((c) => `${c.toLowerCase()}${toSuperscript(values[c] || 0)}`)
     .join(" ");
 }

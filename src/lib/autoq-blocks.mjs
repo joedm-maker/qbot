@@ -47,18 +47,21 @@ function button(label, actionId, value) {
 /**
  * Modal to select opponent count (0-7).
  */
-export function autoqStartModal() {
+export function autoqStartModal({ deckVariant = "Quiddler" } = {}) {
   const options = [];
   for (let i = 0; i <= 7; i++) {
     const label = i === 0 ? "0 (Solo)" : String(i);
     options.push(option(label, String(i)));
   }
 
+  const deckLabel = deckVariant === "Power" ? "Power Deck" : "Standard (Quiddler)";
+
   return {
     type: "modal",
     callback_id: "autoq_start_submit",
     title: text("AutoQ Setup"),
     submit: text("Start Game"),
+    private_metadata: JSON.stringify({ deckVariant }),
     blocks: [
       {
         type: "input",
@@ -74,6 +77,7 @@ export function autoqStartModal() {
       {
         type: "context",
         elements: [
+          { type: "mrkdwn", text: `*Deck:* ${deckLabel}` },
           { type: "mrkdwn", text: "Bots play using historical hand data from real games. Stars require 3+ total players." },
         ],
       },
@@ -89,8 +93,8 @@ export function autoqStartModal() {
  *   - testResult:  { valid, invalid } from a Test tap; rendered as a context line
  */
 export function autoqHandScoreModal(gameId, hand, dealtCards, buttonPressedAt = null, opts = {}) {
-  const { wordsInput = "", testResult = null } = opts;
-  const cardsDisplay = formatDealtCards(dealtCards);
+  const { wordsInput = "", testResult = null, deckVariant = "Quiddler" } = opts;
+  const cardsDisplay = formatDealtCards(dealtCards, deckVariant);
 
   const wordsField = {
     type: "plain_text_input",
@@ -150,8 +154,8 @@ export function autoqHandScoreModal(gameId, hand, dealtCards, buttonPressedAt = 
 /**
  * Score choice modal for digraph disambiguation — with dealt cards context.
  */
-export function autoqScoreChoiceModal(gameId, hand, words, options, dealtCards, buttonPressedAt = null) {
-  const cardsDisplay = formatDealtCards(dealtCards);
+export function autoqScoreChoiceModal(gameId, hand, words, options, dealtCards, buttonPressedAt = null, deckVariant = "Quiddler") {
+  const cardsDisplay = formatDealtCards(dealtCards, deckVariant);
   const radioOptions = options.map((opt) => ({
     text: { type: "mrkdwn", text: `*${opt.score} pts* — ${opt.breakdown} (${opt.cards} cards)` },
     value: JSON.stringify({ score: opt.score, cards: opt.cards, breakdown: opt.breakdown }),
@@ -229,7 +233,7 @@ export function autoqHomeActive(game, currentHand, handResults, personalBests) {
   if (currentHand && currentHand <= 10) {
     const dealtCards = game.dealt_hands?.[String(currentHand)]?.[0]; // player is index 0
     if (dealtCards) {
-      const cardsDisplay = formatDealtCards(dealtCards);
+      const cardsDisplay = formatDealtCards(dealtCards, game.deck_variant || "Quiddler");
       blks.push(divider());
       blks.push(section(`*Hand ${currentHand}* — Your cards: ${cardsDisplay}`));
 

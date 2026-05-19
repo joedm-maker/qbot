@@ -7,7 +7,7 @@
 import crypto from "node:crypto";
 import { verifySlackSignature, parseSlackBody } from "../lib/verify.mjs";
 import { slack } from "../lib/slack.mjs";
-import { getHandRange } from "../lib/cards.mjs";
+import { getHandRange, getDeckVariant } from "../lib/cards.mjs";
 import { dealForHand, filterOptionsAgainstDealt } from "../lib/autoq-deck.mjs";
 import { pickRandomBotNames, selectBotPlays, loadHistoricalScores, buildPool } from "../lib/autoq-bots.mjs";
 import { QUIDDLER_DECK } from "../lib/autoq-deck.mjs";
@@ -65,7 +65,7 @@ async function handleAction(payload) {
       const buttonPressedAt = action.action_ts || null;
       await slack().views.open({
         trigger_id: payload.trigger_id,
-        view: autoqBlocks.autoqHandScoreModal(gameId, hand, dealtCards, buttonPressedAt),
+        view: autoqBlocks.autoqHandScoreModal(gameId, hand, dealtCards, buttonPressedAt, { deckVariant: getDeckVariant(game) }),
       });
       break;
     }
@@ -75,10 +75,11 @@ async function handleAction(payload) {
       try { retryMeta = JSON.parse(action.value); } catch { return; }
       const { game_id, hand, words, dealt_cards } = retryMeta;
       if (!game_id || !dealt_cards) return;
+      const game = await autoqDb.getAutoQGame(game_id);
       const buttonPressedAt = action.action_ts || null;
       await slack().views.open({
         trigger_id: payload.trigger_id,
-        view: autoqBlocks.autoqHandScoreModal(game_id, hand, dealt_cards, buttonPressedAt, { wordsInput: words || "" }),
+        view: autoqBlocks.autoqHandScoreModal(game_id, hand, dealt_cards, buttonPressedAt, { wordsInput: words || "", deckVariant: getDeckVariant(game) }),
       });
       break;
     }
@@ -105,6 +106,7 @@ async function handleAction(payload) {
       const hand = Number(handStr);
       const game = await autoqDb.getAutoQGame(gameId);
       if (!game) return;
+      const variant = getDeckVariant(game);
       const currentCount = game.mulligans?.[String(hand)] || 0;
       const currentCards = game.dealt_hands?.[String(hand)]?.[0] || [];
       const newSize = currentCards.length - 1;
@@ -125,10 +127,10 @@ async function handleAction(payload) {
         excluded.push(...botCards);
       }
 
-      // Build remaining pool and deal new hand
+      // Build remaining pool and deal new hand using the game's deck variant.
       const { buildPool } = await import("../lib/autoq-bots.mjs");
-      const { QUIDDLER_DECK, shuffleDeck } = await import("../lib/autoq-deck.mjs");
-      const pool = buildPool(QUIDDLER_DECK);
+      const { shuffleDeck, getDeckArray } = await import("../lib/autoq-deck.mjs");
+      const pool = buildPool(getDeckArray(variant));
       for (const c of excluded) {
         pool.set(c, Math.max(0, (pool.get(c) || 0) - 1));
       }
@@ -171,10 +173,11 @@ async function handleAutoqCheckWords(payload, action) {
   const wordsInput = values.words_block?.words?.value || "";
   const testResult = wordsInput.trim() ? await validateWords(wordsInput) : { valid: [], invalid: [] };
 
+  const checkGame = await autoqDb.getAutoQGame(game_id);
   try {
     await slack().views.update({
       view_id: payload.view.id,
-      view: autoqBlocks.autoqHandScoreModal(game_id, hand, dealt_cards, button_pressed_at, { wordsInput, testResult }),
+      view: autoqBlocks.autoqHandScoreModal(game_id, hand, dealt_cards, button_pressed_at, { wordsInput, testResult, deckVariant: getDeckVariant(checkGame) }),
     });
   } catch (err) {
     console.warn("Failed to update AutoQ modal (check words):", err.message);
@@ -202,7 +205,13 @@ async function handleViewSubmission(payload) {
     const opponentCount = Number(
       payload.view.state.values.opponent_count_block.opponent_count.selected_option.value
     );
-    await createAutoQGame(userId, opponentCount);
+    // Deck variant flows through from the previous modal via private_metadata
+    let deckVariant = "Quiddler";
+    try {
+      const meta = JSON.parse(payload.view.private_metadata || "{}");
+      if (meta.deckVariant === "Power") deckVariant = "Power";
+    } catch { /* default Quiddler */ }
+    await createAutoQGame(userId, opponentCount, deckVariant);
     await renderHome(userId);
     return respond(200, { response_action: "clear" });
   }
@@ -225,26 +234,31 @@ async function findActiveAutoQForUser(userId) {
   return games.find((g) => g.status === "ACTIVE") || null;
 }
 
-async function createAutoQGame(userId, opponentCount) {
+async function createAutoQGame(userId, opponentCount, deckVariant = "Quiddler") {
   const gameId = crypto.randomUUID();
   const botNames = opponentCount > 0 ? pickRandomBotNames(opponentCount) : [];
   const hands = getHandRange("AutoQ");
 
-  // Load historical scores once for all bot play selection
+  // Load historical scores once for all bot play selection. Note: bot plays
+  // come from Quiddler-era historical breakdowns regardless of deckVariant —
+  // those breakdowns never used CH/CK, so they remain valid against any
+  // superset deck. Scoring will re-evaluate them under the active variant.
   const allScores = opponentCount > 0 ? await loadHistoricalScores() : [];
 
   // Pre-deal cards to human only, bots pick from remaining deck
   const dealtHands = {};
   const botPlays = {};
+  const { getDeckArray } = await import("../lib/autoq-deck.mjs");
+  const sourceDeck = getDeckArray(deckVariant);
 
   for (const hand of hands) {
     // Deal only to the human player (index 0)
-    const dealt = dealForHand(1, hand + 3);
+    const dealt = dealForHand(1, hand + 3, deckVariant);
     dealtHands[String(hand)] = dealt; // dealt[0] = human's cards
 
     // Bot plays: pick random historical hands, validated against remaining deck
     if (opponentCount > 0) {
-      const remainingPool = buildPool(QUIDDLER_DECK);
+      const remainingPool = buildPool(sourceDeck);
       // Remove human's cards from the pool
       for (const c of dealt[0]) {
         remainingPool.set(c, (remainingPool.get(c) || 0) - 1);
@@ -260,6 +274,7 @@ async function createAutoQGame(userId, opponentCount) {
     current_hand: hands[0],
     opponent_count: opponentCount,
     bot_names: botNames,
+    deck_variant: deckVariant,
     dealt_hands: dealtHands,
     bot_plays: botPlays,
     mulligans: {},
@@ -293,9 +308,10 @@ async function submitScore(payload) {
   // Max playable cards = hand - mulligans, minimum 2
   const mulligans = game.mulligans?.[String(hand)] || 0;
   const maxCards = Math.max(2, hand - mulligans);
+  const variant = getDeckVariant(game);
 
   // Filter options against dealt cards
-  const { options, invalid, tooShort } = filterOptionsAgainstDealt(wordsInput, maxCards, dealt_cards);
+  const { options, invalid, tooShort } = filterOptionsAgainstDealt(wordsInput, maxCards, dealt_cards, variant);
 
   if (invalid.length) {
     return validationError("words_block", `Invalid cards: ${invalid.join(", ")}`);
@@ -308,7 +324,7 @@ async function submitScore(payload) {
   if (options.length === 0) {
     // Distinguish: too many cards vs wrong cards
     const { getScoreOptions } = await import("../lib/cards.mjs");
-    const unconstrained = getScoreOptions(wordsInput, maxCards);
+    const unconstrained = getScoreOptions(wordsInput, maxCards, variant);
     if (unconstrained.options.length === 0) {
       return validationError("words_block", `Too many cards — you can only play ${maxCards} cards this hand.`);
     }
@@ -332,7 +348,7 @@ async function submitScore(payload) {
   // Multiple options — show choice modal
   return respond(200, {
     response_action: "update",
-    view: autoqBlocks.autoqScoreChoiceModal(game_id, hand, wordsInput, options, dealt_cards, meta.button_pressed_at),
+    view: autoqBlocks.autoqScoreChoiceModal(game_id, hand, wordsInput, options, dealt_cards, meta.button_pressed_at, variant),
   });
 }
 

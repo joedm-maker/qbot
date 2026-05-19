@@ -34,9 +34,19 @@ export async function handleStatsRequest(event) {
 }
 
 async function getScores() {
-  const scores = await scanAll("qbim-scores");
-  // Normalize player_id
-  const normalized = scores.map((s) => ({ ...s, player_id: s.player_slack_id }));
+  const [scores, games] = await Promise.all([
+    scanAll("qbim-scores"),
+    scanAll("qbim-games"),
+  ]);
+  // Build game lookup so we can stamp deck_variant onto each score.
+  // Legacy games predate the field — they're implicitly "Quiddler".
+  const variantByGame = {};
+  for (const g of games) variantByGame[g.game_id] = g.deck_variant || "Quiddler";
+  const normalized = scores.map((s) => ({
+    ...s,
+    player_id: s.player_slack_id,
+    deck_variant: variantByGame[s.game_id] || "Quiddler",
+  }));
   return respond(normalized);
 }
 
@@ -48,21 +58,34 @@ async function getScores() {
 // into the same pool.
 async function getAutoqScores() {
   const items = await scanAll(process.env.AUTOQ_TABLE || "qbim-autoq");
+  // Index AutoQ STATE items so each HAND# record can pick up its parent
+  // game's deck_variant. Legacy AutoQ games default to "Quiddler".
+  const variantByGame = {};
+  for (const it of items) {
+    if (it.sk === "STATE" && typeof it.pk === "string") {
+      const gid = it.pk.replace(/^autoq-/, "");
+      variantByGame[gid] = it.deck_variant || "Quiddler";
+    }
+  }
   const handItems = items.filter((it) => typeof it.sk === "string" && it.sk.startsWith("HAND#"));
-  const normalized = handItems.map((it) => ({
-    game_id: typeof it.pk === "string" ? it.pk.replace(/^autoq-/, "") : null,
-    player_id: it.player_id,
-    player_slack_id: it.player_id,
-    hand: it.hand,
-    raw_score: it.raw_score || 0,
-    stars: it.stars || 0,
-    words: it.words || "",
-    breakdown: it.breakdown || "",
-    word_count: it.word_count || 0,
-    longest_word_letters: it.longest_word_letters || 0,
-    submitted_at: it.submitted_at || null,
-    source: "autoq",
-  }));
+  const normalized = handItems.map((it) => {
+    const gameId = typeof it.pk === "string" ? it.pk.replace(/^autoq-/, "") : null;
+    return {
+      game_id: gameId,
+      player_id: it.player_id,
+      player_slack_id: it.player_id,
+      hand: it.hand,
+      raw_score: it.raw_score || 0,
+      stars: it.stars || 0,
+      words: it.words || "",
+      breakdown: it.breakdown || "",
+      word_count: it.word_count || 0,
+      longest_word_letters: it.longest_word_letters || 0,
+      submitted_at: it.submitted_at || null,
+      source: "autoq",
+      deck_variant: (gameId && variantByGame[gameId]) || "Quiddler",
+    };
+  });
   return respond(normalized);
 }
 
@@ -98,8 +121,12 @@ async function getGames() {
 
   // Assign complete_number 1..N in creation order (ascending by game_number).
   // game_number stays untouched on the record — it's the storage-order id.
+  // Stamp deck_variant default for legacy records that predate the field.
   const ascByCreation = [...fullyComplete].sort((a, b) => (a.game_number || 0) - (b.game_number || 0));
-  ascByCreation.forEach((g, idx) => { g.complete_number = idx + 1; });
+  ascByCreation.forEach((g, idx) => {
+    g.complete_number = idx + 1;
+    g.deck_variant = g.deck_variant || "Quiddler";
+  });
 
   const completed = ascByCreation.sort((a, b) => b.complete_number - a.complete_number);
 
@@ -132,7 +159,10 @@ async function getPlayers() {
   for (const p of rawPlayers) players[p.slack_id] = p;
 
   const scores = rawScores.map((s) => ({ ...s, player_id: s.player_slack_id }));
-  const games = rawGames.filter((g) => g.status === "COMPLETE");
+  // Default deck_variant on legacy game records so the per-deck filtering works.
+  const games = rawGames
+    .filter((g) => g.status === "COMPLETE")
+    .map((g) => ({ ...g, deck_variant: g.deck_variant || "Quiddler" }));
 
   // Build lookup maps once
   const scoresByGameId = {};
@@ -155,21 +185,21 @@ async function getPlayers() {
     }
   }
 
-  // Build game lookup for type
+  // Build game lookup for type + deck_variant
   const gameById = {};
   for (const g of games) gameById[g.game_id] = g;
 
-  // Enrich with computed stats
-  for (const [pid, p] of Object.entries(players)) {
-    const playerScores = scoresByPlayerId[pid] || [];
+  // Compute one deck's stats block for a player. Pulled out as a helper so the
+  // main fields (Quiddler) and the power_stats sub-object share the same logic.
+  function computeDeckBlock(pid, variant, playerScores) {
+    const filteredScores = playerScores.filter((s) => (gameById[s.game_id]?.deck_variant || "Quiddler") === variant);
 
     const scoresByGame = {};
-    for (const s of playerScores) {
+    for (const s of filteredScores) {
       if (!scoresByGame[s.game_id]) scoresByGame[s.game_id] = [];
       scoresByGame[s.game_id].push(s);
     }
 
-    // Complete games only
     const completeGameIds = [];
     for (const [gid, gScores] of Object.entries(scoresByGame)) {
       const hands = new Set(gScores.map((s) => s.hand));
@@ -177,7 +207,7 @@ async function getPlayers() {
       const requiredHands = getHandRange(gameType);
       if (requiredHands.every((h) => hands.has(h))) completeGameIds.push(gid);
     }
-    const completeGames = games.filter((g) => completeGameIds.includes(g.game_id));
+    const completeGames = games.filter((g) => completeGameIds.includes(g.game_id) && g.deck_variant === variant);
 
     const gp = completeGames.length;
     const wins = completeGames.filter((g) => g.winner === pid).length;
@@ -185,35 +215,37 @@ async function getPlayers() {
       scoresByGame[gid].reduce((sum, s) => sum + (s.raw_score || 0) + (s.stars || 0) * 10, 0)
     );
 
-    p.games_played = gp;
-    p.all_time_wins = wins;
-    p.win_pct = gp > 0 ? Math.round((wins / gp) * 1000) / 10 : 0;
-
-    if (completeGameTotals.length) {
-      p.avg_game_total = Math.round(completeGameTotals.reduce((a, b) => a + b, 0) / completeGameTotals.length * 10) / 10;
-      p.highest_game_total = Math.max(...completeGameTotals);
-      p.lowest_game_total = Math.min(...completeGameTotals);
-    } else {
-      p.avg_game_total = 0; p.highest_game_total = 0; p.lowest_game_total = 0;
-    }
-
-    // Hand-level (all hands)
     let totalStars = 0, totalMulligans = 0;
-    for (const s of playerScores) { totalStars += s.stars || 0; totalMulligans += s.mulligans || 0; }
+    for (const s of filteredScores) { totalStars += s.stars || 0; totalMulligans += s.mulligans || 0; }
 
-    p.all_time_stars = totalStars;
-    p.all_time_mulligans = totalMulligans;
-    p.stars_per_game = gp > 0 ? Math.round(totalStars / gp * 100) / 100 : 0;
+    const rawOnly = filteredScores.map((s) => s.raw_score || 0);
+    return {
+      games_played: gp,
+      all_time_wins: wins,
+      win_pct: gp > 0 ? Math.round((wins / gp) * 1000) / 10 : 0,
+      avg_game_total: completeGameTotals.length ? Math.round(completeGameTotals.reduce((a, b) => a + b, 0) / completeGameTotals.length * 10) / 10 : 0,
+      highest_game_total: completeGameTotals.length ? Math.max(...completeGameTotals) : 0,
+      lowest_game_total: completeGameTotals.length ? Math.min(...completeGameTotals) : 0,
+      all_time_stars: totalStars,
+      all_time_mulligans: totalMulligans,
+      stars_per_game: gp > 0 ? Math.round(totalStars / gp * 100) / 100 : 0,
+      highest_hand_score: rawOnly.length ? Math.max(...rawOnly) : 0,
+      avg_hand_score: rawOnly.length ? Math.round(rawOnly.reduce((a, b) => a + b, 0) / rawOnly.length * 10) / 10 : 0,
+      total_hands_played: filteredScores.length,
+    };
+  }
 
-    if (playerScores.length) {
-      const rawOnly = playerScores.map((s) => s.raw_score || 0);
-      p.highest_hand_score = Math.max(...rawOnly);
-      p.avg_hand_score = Math.round(rawOnly.reduce((a, b) => a + b, 0) / rawOnly.length * 10) / 10;
-      p.total_hands_played = playerScores.length;
-    } else {
-      p.highest_hand_score = 0; p.avg_hand_score = 0; p.total_hands_played = 0;
-    }
+  for (const [pid, p] of Object.entries(players)) {
+    const playerScores = scoresByPlayerId[pid] || [];
 
+    // Main fields stay Quiddler-only so any dashboard built today is unaffected
+    // by Power games. Power gets its own parallel block.
+    const quiddler = computeDeckBlock(pid, "Quiddler", playerScores);
+    Object.assign(p, quiddler);
+
+    p.power_stats = computeDeckBlock(pid, "Power", playerScores);
+
+    // Persisted-only counters (not computed from scores). Keep across decks.
     p.hands_won = p.hands_won || 0;
     p.times_hand_screwed = p.times_hand_screwed || 0;
     p.times_screwed_others = p.times_screwed_others || 0;
@@ -229,6 +261,7 @@ async function getLiveGame() {
 
   // Pick the most recent active game
   const game = active.sort((a, b) => (b.game_number || 0) - (a.game_number || 0))[0];
+  game.deck_variant = game.deck_variant || "Quiddler";
 
   // Get scores and player names
   const allScores = await scanAll("qbim-scores");
