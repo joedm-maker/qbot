@@ -1,3 +1,21 @@
+## v0.2.6 — 2026-05-19
+
+### Added
+- **Slack support for Qlander, Hot Swap, and Gauntlet** — closes the parity gap between the home tab and `/play`.
+
+**Qlander (Slack):**
+- `submitScore` and `confirmScore` (the digraph chooser) now run the singleton check synchronously before the dictionary round-trip. Repeat words surface as an inline `validationError` under the words field so the modal stays open with the input preserved. `saveScore`'s async check stays as defense-in-depth.
+
+**Hot Swap (Slack):**
+- New optional `static_select` in `handScoreModal` listing the player's unique dealt cards. Leaving it unset = skip banking. Threaded through `submitScore` → `invokeScoreWorker` → `saveScore`. The digraph chooser (`scoreChoiceModal`) carries `bank_card` through its `private_metadata` so it survives the multi-option detour. `qbim_open_hand_modal` computes `bankOptions` from `game.dealt_cards` when game_type=HotSwap + Digital + hand < 10.
+- Saves are honor-checked: server validates that the picked card was actually in the player's discards (dealt − used). Picks that turn out to overlap with words played get rejected inline.
+
+**Gauntlet (Slack):**
+- New Gauntlet branch in `blocks.homeActive`. Renders a per-hand status line (`H3: 12★ · H4: 🎴 · H5: —`) plus one "Play Hand N" button per unsubmitted dealt hand. Slack actions blocks max out at 5 elements, so 6-8 buttons split into two rows. When the player finishes all hands, the buttons disappear and the section reads "All your hands are in. Waiting for others or for finalize."
+- `handScoreModal` accepts a new `dealtCards` opt and renders `🎴 Your hand: A · QU · Z` at the top of the modal. Critical for Gauntlet because the home picker doesn't show per-hand cards.
+
+---
+
 ## v0.2.5 — 2026-05-19
 
 ### Added
