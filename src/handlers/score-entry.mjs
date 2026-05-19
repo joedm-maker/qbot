@@ -2,7 +2,7 @@ import { verifySlackSignature, parseSlackBody } from "../lib/verify.mjs";
 import { slack, CHANNEL, dmAllPlayers, dmUser } from "../lib/slack.mjs";
 import * as db from "../lib/db.mjs";
 import * as blocks from "../lib/blocks.mjs";
-import { getScoreOptions, getHandRange, formatWordsWithPoints, normalizeWords, dealSizeForHand, CARD_VALUES } from "../lib/cards.mjs";
+import { getScoreOptions, getHandRange, formatWordsWithPoints, normalizeWords, dealSizeForHand, CARD_VALUES, getDeck, getDeckVariant } from "../lib/cards.mjs";
 import { renderHome, resolveNames, aggregateScores, findCurrentRound, ADMIN_USER } from "../lib/home.mjs";
 import { createQuicklerTimer, deleteQuicklerTimer } from "../lib/quickler.mjs";
 import { validateWords } from "../lib/dictionary.mjs";
@@ -289,6 +289,38 @@ async function handleViewSubmission(payload) {
 
 // ── Score Submission ───────────────────────────────────
 
+/**
+ * Qlander singleton-rule check. Returns an array of repeat words if any
+ * collide with this player's stored blocklist (last 20 fully-complete
+ * games) OR their own prior submissions in the current game — null
+ * otherwise. Called synchronously from the Slack score-submit flow so
+ * the modal can surface the rejection inline. saveScore re-runs the
+ * same check as defense-in-depth for the async worker path.
+ */
+async function checkQlanderRepeats(userId, game_id, hand, wordsInput) {
+  if (!wordsInput.trim()) return null;
+  const game = await db.getGame(game_id);
+  if (game.game_type !== "Qlander") return null;
+  const blocked = new Set(game.qlander_blocklist?.[userId] || []);
+  const priorScores = await db.getScoresForGame(game_id);
+  for (const s of priorScores) {
+    if (s.player_slack_id !== userId) continue;
+    if (s.hand === hand) continue;
+    const tokens = String(s.words || "").split(/[\s+,]+/).filter(Boolean);
+    for (const t of tokens) {
+      const n = t.toLowerCase().replace(/[^a-z]/g, "");
+      if (n) blocked.add(n);
+    }
+  }
+  const words = wordsInput.replace(/[\s,+]+/g, " ").trim().split(" ").filter(Boolean);
+  const repeats = [];
+  for (const w of words) {
+    const n = w.toLowerCase().replace(/[^a-z]/g, "");
+    if (n && blocked.has(n)) repeats.push(w);
+  }
+  return repeats.length ? repeats : null;
+}
+
 async function submitScore(payload) {
   const userId = payload.user.id;
   let game_id, hand, button_pressed_at;
@@ -305,12 +337,14 @@ async function submitScore(payload) {
   const mulligans = await db.getMulliganCount(game_id, userId, hand);
   const gameForMax = await db.getGame(game_id);
   const maxCards = dealSizeForHand(gameForMax?.game_type, hand, mulligans);
+  const deckVariant = getDeckVariant(gameForMax);
 
   // Get all possible score options with adjusted card limit
-  const { options, invalid, tooShort } = getScoreOptions(wordsInput, maxCards);
+  const { options, invalid, tooShort } = getScoreOptions(wordsInput, maxCards, deckVariant);
 
   if (invalid.length) {
-    return validationError(`Invalid cards: ${invalid.join(", ")}. Valid cards: A-Z, QU, IN, ER, TH, CL`);
+    const validList = getDeck(deckVariant).digraphs.join(", ");
+    return validationError(`Invalid cards: ${invalid.join(", ")}. Valid cards: A-Z, ${validList}`);
   }
 
   if (tooShort?.length) {
@@ -319,6 +353,13 @@ async function submitScore(payload) {
 
   if (options.length === 0) {
     return validationError(`Too many cards for Hand ${hand}${mulligans > 0 ? ` with ${mulligans} mulligan${mulligans > 1 ? "s" : ""}` : ""} (max ${maxCards} cards).`);
+  }
+
+  // Qlander singleton rule — cheap local check before the dictionary
+  // round-trip. Inline-error so the modal stays open with the input.
+  const repeats = await checkQlanderRepeats(userId, game_id, hand, wordsInput);
+  if (repeats) {
+    return validationError(`Qlander: you've already played ${repeats.join(", ")} (last 20 games or earlier this game).`);
   }
 
   // Dictionary validation (sync — shows rejection modal with Vote button)
@@ -371,6 +412,13 @@ async function confirmScore(payload) {
   const selectedValue = values.score_choice_block.score_choice.selected_option.value;
   let chosen;
   try { chosen = JSON.parse(selectedValue); } catch { return respond(200); }
+
+  // Qlander singleton rule — same check as submitScore. Run before the
+  // dictionary round-trip; surfaces inline in the modal.
+  const repeats = await checkQlanderRepeats(userId, game_id, hand, words);
+  if (repeats) {
+    return validationError(`Qlander: you've already played ${repeats.join(", ")} (last 20 games or earlier this game).`);
+  }
 
   // Dictionary validation (sync — shows rejection modal with Vote button)
   const dictCheck = await validateWords(words);
@@ -539,7 +587,7 @@ export async function saveScore(userId, game_id, hand, wordsInput, chosen, butto
         if ((remaining.get(bankCard) || 0) <= 0) {
           return validationError(`Can't bank ${bankCard} — not in your discards.`);
         }
-      } else if (!CARD_VALUES[bankCard]) {
+      } else if (!getDeck(getDeckVariant(game)).values[bankCard]) {
         return validationError(`Can't bank ${bankCard} — not a valid card.`);
       }
       await db.setBankedCard(game_id, userId, bankCard);
@@ -714,11 +762,12 @@ export async function autoAwardStars(game, hand, handScores, announce = true) {
     const adminPlayer = await db.getPlayer(ADMIN_USER);
     const showCardPoints = adminPlayer?.preferences?.show_card_points ?? true;
 
+    const variant = getDeckVariant(game);
     const playerLines = handScores.map((s) => {
       const name = names.get(s.player_slack_id) || s.player_slack_id;
       const starStr = (s.player_slack_id === longestWinner ? "★" : "") + (s.player_slack_id === mostWordsWinner ? "★" : "");
       const wordsFormatted = s.words
-        ? (showCardPoints ? formatWordsWithPoints(s.words) : s.words.toLowerCase().replace(/\+/g, " "))
+        ? (showCardPoints ? formatWordsWithPoints(s.words, variant) : s.words.toLowerCase().replace(/\+/g, " "))
         : "(no words)";
       return `• *${name}*: ${wordsFormatted}  — *${s.raw_score} pts*${starStr ? "  " + starStr : ""}`;
     });
@@ -768,7 +817,7 @@ export async function autoAwardStars(game, hand, handScores, announce = true) {
       }
     } else if (game.deck_type === "Digital") {
       // Digital deck: each new hand reshuffles, so deal next-hand cards for
-      // every eligible player from a freshly shuffled full 118-card deck.
+      // every eligible player from a freshly shuffled full deck.
       // Hot Swap: if a player banked a card last hand, prepend it and deal
       // one fewer fresh card so the total stays at hand+3.
       const { dealFromPool } = await import("../lib/autoq-deck.mjs");
@@ -777,10 +826,11 @@ export async function autoAwardStars(game, hand, handScores, announce = true) {
       const nextEligible = game.players.filter((pid) => (startHands[pid] || gameHands[0]) <= nextHand);
       const dealSize = dealSizeForHand(game.game_type, nextHand, 0);
       const banked = game.game_type === "HotSwap" ? (game.banked_cards || {}) : {};
+      const dealVariant = getDeckVariant(game);
       for (const pid of nextEligible) {
         const carried = banked[pid] || null;
         const freshSize = carried ? Math.max(0, dealSize - 1) : dealSize;
-        const { cards } = dealFromPool([], freshSize);
+        const { cards } = dealFromPool([], freshSize, dealVariant);
         const finalCards = carried ? [carried, ...cards] : cards;
         await db.recordDeal(game.game_id, pid, nextHand, finalCards);
       }
@@ -911,7 +961,7 @@ async function adminSaveEdit(payload) {
   // Calculate score from words (accounting for mulligans)
   const gameForMax2 = await db.getGame(game_id);
   const maxCards = dealSizeForHand(gameForMax2?.game_type, hand, newMulligans);
-  const { options, invalid, tooShort } = getScoreOptions(wordsInput, maxCards);
+  const { options, invalid, tooShort } = getScoreOptions(wordsInput, maxCards, getDeckVariant(gameForMax2));
   if (invalid.length) {
     return validationError(`Invalid cards: ${invalid.join(", ")}`);
   }
