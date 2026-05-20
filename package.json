@@ -4,7 +4,7 @@
   "description": "QBIM Slack Bot — score tracker for lunchtime Quiddler",
   "type": "module",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   },
   "scripts": {
     "deploy": "sam build && sam deploy --guided",
