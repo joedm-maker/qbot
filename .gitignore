@@ -4,3 +4,4 @@ samconfig.toml
 .env
 packaged.yaml
 analysis/data/
+.claude/
