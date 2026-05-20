@@ -5,12 +5,12 @@
 QBIM Bot is a Slack bot for tracking lunchtime Quiddler card game scores at Design Master Software. Players interact entirely through the Slack Home tab — starting games, entering words, viewing scoreboards, and managing game state. The bot auto-calculates scores from card values, awards stars for longest word and most words, enforces round-by-round play, and tracks lifetime player statistics.
 
 **Target platform:** Slack (Home tab + DMs), with a separate React stats dashboard
-**Tech stack:** Node.js 20 ESM on AWS Lambda, API Gateway, DynamoDB, deployed via AWS SAM CLI
+**Tech stack:** Node.js 22 ESM on AWS Lambda, API Gateway, DynamoDB, deployed via AWS SAM CLI
 
 ## 2. Tech Stack & Dependencies
 
 ### Runtime
-- **Node.js 20.x** (ESM modules — all files use `.mjs` extension)
+- **Node.js 22.x** (ESM modules — all files use `.mjs` extension)
 - **AWS Lambda** (single function, 10s timeout, 256MB)
 - **AWS API Gateway** (REST API, stage: `prod`)
 - **AWS DynamoDB** (3 tables, PAY_PER_REQUEST billing)
@@ -47,15 +47,11 @@ qbim-bot/
 ├── template.yaml                # SAM/CloudFormation template — Lambda, API Gateway, DynamoDB tables
 ├── import-history.mjs           # Imports player stats from \\BIRD\Shared\QBIM\qbim_data.json
 ├── import-all-history.mjs       # Imports full game+score history from same JSON
-├── test-env.mjs                 # Preloads env vars (table names, secrets) for test scripts
-├── test-harness.mjs             # Auto/interactive test runner with mock Slack client
-├── test-replay.mjs              # Replays real game from 2026-03-31 with all 7 players
 └── src/
     ├── handlers/
     │   ├── router.mjs           # Lambda entry point — routes by httpMethod, action_id, callback_id
     │   ├── game-flow.mjs        # Start/join/end game, mulligan, score toggle, app_home_opened
     │   ├── score-entry.mjs      # Score submission, auto stars, admin edits, game finalization
-    │   ├── leaderboard.mjs      # Game history queries (capped at 7 days, 10 games)
     │   ├── stats-api.mjs        # Read-only GET endpoints for dashboard (/stats/players,games,scores,live)
     │   ├── auth.mjs             # Slack OpenID Connect sign-in for the web app (/auth/slack/login, /callback, /me)
     │   ├── web-game.mjs         # Web-app game endpoints (/games/me|create|join|mulligan|drop|finish, /scores, /votes/start) — Bearer JWT auth
@@ -71,7 +67,7 @@ qbim-bot/
         ├── jwt.mjs              # HS256 JWT sign/verify for web-app session tokens (no external deps)
         ├── vote.mjs             # Dictionary-rejection vote system — startWordVote, timer, resolveVote
         ├── quickler.mjs         # EventBridge Scheduler helpers for the 30s Quickler timer
-        ├── autoq-deck.mjs       # 118-card Quiddler deck, shuffleDeck, dealFromPool, filterOptionsAgainstDealt
+        ├── autoq-deck.mjs       # Per-deck composition (118-card Quiddler, 126-card Power — see POWER_DECK.md), shuffleDeck, dealForHand, dealFromPool, filterOptionsAgainstDealt, formatDealtCards, getDeckSize, getDeckArray
         ├── autoq-bots.mjs       # AutoQ bot play selection from historical scores
         ├── autoq-db.mjs         # AutoQ-specific persistence
         └── dictionary.mjs       # Merriam-Webster validation + house-rule overrides
@@ -114,8 +110,8 @@ All game types (QBIM, Quickler, Hot Swap, Qlander, Gauntlet, AutoQ) deal `hand +
 
 Games opt into in-app dealing via `game.deck_type = "Digital"` (default: `"Physical"`, scores only). Digital games persist:
 - `game.dealt_cards[playerId#hand]` — what the player currently holds
-- `game.hand_seen_cards[playerId#hand]` — accumulates the full set of cards shown that hand (initial + every mulligan discard); mulligan re-deals draw from `118 - hand_seen_cards`, so the pool depletes within a hand
-- New hands re-shuffle the full 118-card deck — `hand_seen_cards` is per-hand, not per-game
+- `game.hand_seen_cards[playerId#hand]` — accumulates the full set of cards shown that hand (initial + every mulligan discard); mulligan re-deals draw from `getDeckSize(game.deck_variant) - hand_seen_cards`, so the pool depletes within a hand
+- New hands re-shuffle the full deck (118 cards for Quiddler, 126 for Power — see POWER_DECK.md) — `hand_seen_cards` is per-hand, not per-game
 - `db.recordDeal()` updates both maps atomically
 
 ## 5. Data Models & Schema
@@ -127,6 +123,8 @@ Games opt into in-app dealing via `game.deck_type = "Digital"` (default: `"Physi
 | `game_date` | String (GSI PK) | ISO date `YYYY-MM-DD` |
 | `game_number` | Number (GSI SK) | Sequential per day |
 | `game_type` | String | "QBIM", "Quickler", "HotSwap", "Qlander", "Gauntlet" |
+| `deck_type` | String | "Physical" (scores only) or "Digital" (in-app dealing); Power deck implies Digital |
+| `deck_variant` | String | "Quiddler" (118-card default) or "Power" (126-card data-tuned variant — see POWER_DECK.md). Legacy records without this field default to "Quiddler" via `getDeckVariant()` in `cards.mjs`. Per-deck values + composition are owned by `cards.mjs::DECKS` and `autoq-deck.mjs::DECK_COMPOSITIONS`. |
 | `status` | String | "OPEN" → "ACTIVE" → "COMPLETE" |
 | `players` | List<String> | Current player Slack IDs (drops removed) |
 | `player_start_hands` | Map<String, Number> | Player ID → hand they joined at (3 for originals) |
@@ -194,8 +192,6 @@ Games opt into in-app dealing via `game.deck_type = "Digital"` (default: `"Physi
 
 **stats-api.mjs** — GET endpoints: `/stats/players` (enriched with computed stats), `/stats/games` (COMPLETE only, with winners), `/stats/scores` (normalized player_id), `/stats/live` (active game with scores and player names). Full table scans with pagination. CORS enabled.
 
-**leaderboard.mjs** — Game history display (7-day window, 10-game cap). Uses shared helpers from home.mjs.
-
 ### Libraries
 
 **home.mjs** — `renderHome(userId)` — the core home tab renderer. Detects admin user, checks for active/complete games, applies 30-minute visibility window for completed games, 10-minute auto-finalize for review mode. Also: `renderAdminHome()` with compact score table and edit/recalc/republish buttons. Exports: `renderHome`, `resolveNames`, `findCurrentRound`, `aggregateScores`, `filterCompletedHands`, `ADMIN_USER`.
@@ -206,7 +202,7 @@ Games opt into in-app dealing via `game.deck_type = "Digital"` (default: `"Physi
 
 **db.mjs** — DynamoDB operations: `getGame`, `getGamesByDate`, `getRecentGames`, `getMaxGameNumber`, `createGame`, `updateGameStatus`, `addPlayerToGame`, `setPlayerStartHand`, `removePlayerFromGame`, `addDealer`, `addMulligan`, `setMulliganCount`, `getMulliganCount`, `initMulligansMap`, `putScore`, `getAllScores` (full table scan with pagination — used by `postSuperlatives()` for historical averages), `getScoresForGame`, `getScoresForGameHand`, `updateScoreStars`, `getPlayer`, `upsertPlayer`, `setPlayerPreference`, `initPreferences`, `incrementPlayerStats`, `getRegularPlayers`, `updateGameAttr`, `deleteAllScoresForGame`, `deleteGame`.
 
-**slack.mjs** — `slack()` returns cached WebClient. `setMockClient(mock)` for testing. `dmUser(userId, {text, blocks})` opens conversation + posts. `dmAllPlayers(playerIds, {text, blocks})` DMs everyone. `CHANNEL()` returns channel ID (unused now — all messages via DM).
+**slack.mjs** — `slack()` returns cached WebClient. `dmUser(userId, {text, blocks})` opens conversation + posts. `dmAllPlayers(playerIds, {text, blocks})` DMs everyone. `CHANNEL()` returns channel ID (kept as a helper export; not imported by any handler since messaging moved to DMs).
 
 **verify.mjs** — `verifySlackSignature(secret, headers, body)` — HMAC-SHA256 with timestamp replay protection. Normalizes header keys to lowercase (API Gateway passes original casing). `parseSlackBody(body, isBase64)` — handles both JSON and URL-encoded payloads.
 
@@ -263,7 +259,6 @@ Games opt into in-app dealing via `game.deck_type = "Digital"` (default: `"Physi
 | `template.yaml` | SAM/CloudFormation — Lambda, API Gateway, DynamoDB tables, parameters |
 | `samconfig.toml` | SAM deploy settings — stack name, region, S3 bucket, parameter overrides (gitignored) |
 | `.gitignore` | Ignores node_modules, .aws-sam, samconfig.toml, .env |
-| `test-env.mjs` | Preloads env vars for local test scripts |
 
 ### SAM Template Parameters
 | Parameter | Type | Description |
@@ -283,28 +278,7 @@ Games opt into in-app dealing via `game.deck_type = "Digital"` (default: `"Physi
 | GET | /stats/scores | router → stats-api |
 | GET | /stats/live | router → stats-api |
 
-## 9. Testing Strategy
-
-### Test Files
-- **test-harness.mjs** — Full auto-test (2-player game, all hands) or interactive menu. Uses mock Slack client (`setMockClient`). Runs against real DynamoDB tables. `node --import ./test-env.mjs test-harness.mjs --auto`
-- **test-replay.mjs** — Replays a real 7-player game from 2026-03-31 with exact words. Tests + separator, star logic, player drops.
-- **test-env.mjs** — Sets env vars before module loading (required because DynamoDB table names are captured at import time).
-
-### Mock Approach
-Both test files replace the Slack client with a mock that:
-- `conversations.open()` → returns fake DM channel ID
-- `chat.postMessage()` → logs to console with `[DM→name]` prefix
-- `views.publish()` → logs home tab blocks
-- `views.open()` → logs modal opens
-- `users.info()` → returns hardcoded display names
-
-### Test Data
-Tests use mock player IDs (`U_ALICE`, `U_BOB`) and write to the real DynamoDB tables. Cleanup functions scan and delete test data before each run.
-
-### No Unit Tests
-There are no isolated unit tests. Testing is done through integration tests that exercise the full handler chain with mock Slack and real DynamoDB.
-
-## 10. Known Patterns, Conventions & Gotchas
+## 9. Known Patterns, Conventions & Gotchas
 
 ### Code Style
 - All files are ESM (`.mjs`). `import`/`export` throughout.
@@ -316,7 +290,6 @@ There are no isolated unit tests. Testing is done through integration tests that
 - **API Gateway header casing:** Headers arrive with original casing (`X-Slack-Signature`), not lowercase. `verify.mjs` normalizes them.
 - **Express 5 path-to-regexp:** The `*` wildcard doesn't work. Use middleware fallback instead of `app.get("*", ...)`.
 - **`samconfig.toml`** contains Slack secrets — always gitignored.
-- **DynamoDB table names captured at import time:** `test-env.mjs` must be loaded via `--import` flag before any handler modules.
 - **Circular dependencies:** `home.mjs` dynamically imports `score-entry.mjs` for `finalizeGame()` (10-minute timeout). `game-flow.mjs` dynamically imports `score-entry.mjs` for `autoAwardStars()` (player drop). Both use `await import()`.
 - **`ScanIndexForward: false`** on the date-index GSI returns games in descending `game_number` order. Take `[0]` for latest, not `[length-1]`.
 

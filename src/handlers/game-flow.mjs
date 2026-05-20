@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { verifySlackSignature, parseSlackBody } from "../lib/verify.mjs";
-import { slack, CHANNEL, dmUser, dmAllPlayers } from "../lib/slack.mjs";
+import { slack, dmUser, dmAllPlayers } from "../lib/slack.mjs";
 import * as db from "../lib/db.mjs";
 import * as blocks from "../lib/blocks.mjs";
 import { renderHome, resolveNames, aggregateScores } from "../lib/home.mjs";
@@ -104,10 +104,11 @@ async function handleAction(payload) {
       // too depleted to deal the new (smaller) hand, reject and don't count
       // the mulligan against the player.
       const gVariant = getDeckVariant(g);
+      const mulliganKey = `${userId}#${hand}`;
+      const mPrior = g?.mulligans?.[mulliganKey] || 0;
       if (g.deck_type === "Digital") {
-        const mPrior = await db.getMulliganCount(gameId, userId, hand);
         const target = dealSizeForHand(g.game_type, hand, mPrior + 1);
-        const seen = g.hand_seen_cards?.[`${userId}#${hand}`] || [];
+        const seen = g.hand_seen_cards?.[mulliganKey] || [];
         const poolRemaining = getDeckSize(gVariant) - seen.length;
         if (poolRemaining < target) {
           await renderHome(userId);
@@ -118,10 +119,10 @@ async function handleAction(payload) {
       // impatient double-taps) within the debounce window.
       const ok = await db.tryAddMulligan(gameId, userId, hand, dealSizeForHand(g.game_type, hand, 0) - 2);
       if (ok && g.deck_type === "Digital") {
-        // tryAddMulligan only updates the mulligans map; g.hand_seen_cards is
-        // still current, no need to refetch the game just for it.
-        const m = await db.getMulliganCount(gameId, userId, hand);
-        const seen = g.hand_seen_cards?.[`${userId}#${hand}`] || [];
+        // tryAddMulligan incremented mulligans by 1; derive locally rather
+        // than refetch the row.
+        const m = mPrior + 1;
+        const seen = g.hand_seen_cards?.[mulliganKey] || [];
         const dealSize = dealSizeForHand(g.game_type, hand, m);
         const { cards } = dealFromPool(seen, dealSize, gVariant);
         await db.recordDeal(gameId, userId, hand, cards);

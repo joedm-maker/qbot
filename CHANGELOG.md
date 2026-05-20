@@ -1,3 +1,18 @@
+## v0.2.7 — 2026-05-20
+
+### Added
+- **Power Deck — third deck variant alongside Physical and Digital.** 126 cards (vs Quiddler's 118), adds CH and CK digraph cards, rebalanced point values; data-tuned from a corpus analysis (ENABLE1, 125k 2–10 letter words) plus a 822-hand playtest replay. Server-enforced Digital-only for now (no physical Power decks yet). Quiddler regression: 822/822 historical hands reproduce bit-identical scores under the refactored code path.
+- **`deck_variant` field on `qbim-games` records** ("Quiddler" default, "Power" opt-in). Threaded through dealing, scoring, mulligans, display, and stats API. Legacy records without the field resolve to "Quiddler" via `getDeckVariant()`.
+- **Per-deck library layer** in `cards.mjs` (`DECKS` map: values + digraphs + score-affecting / neutral sets) and `autoq-deck.mjs` (`DECK_COMPOSITIONS`, `getDeckSize`, `getDeckArray`). Backward-compat aliases `CARD_VALUES` and `QUIDDLER_DECK` resolve to Quiddler.
+- **Slack `startGameModal` deck picker** — Physical / Digital / Power. Power option encodes both `deck_type=Digital` + `deck_variant=Power` on submit. The AutoQ-setup modal carries the variant forward via `private_metadata`.
+- **Stats API segregation** — `/stats/scores` and `/stats/autoq-scores` stamp every record with `deck_variant` (joined from the parent game); `/stats/games` and `/stats/live` default the field for legacy records; `/stats/players` keeps lifetime stats Quiddler-only and adds a parallel `power_stats` sub-block so dashboards stay clean by default.
+- **Docs**: `POWER_DECK.md` (spec), `POWER_DECK_RATIONALE.md` (decision defense), `AUTOQ_POINT_VALUES.md` + `AUTOQ_LETTER_COUNTS.md` (corpus + playtest analysis), `analysis/scripts/01..09` (re-runnable derivation scripts).
+
+### Changed
+- **`getDeckSize(deck_variant) - hand_seen_cards`** now drives digital deck pool checks (was hardcoded `118`). Affects mulligan deal sizing in `game-flow.mjs`, `web-game.mjs`, and `score-entry.mjs`.
+
+---
+
 ## v0.2.6 — 2026-05-19
 
 ### Added

@@ -2,6 +2,8 @@
 
 **A 126-card custom deck for QBIM / AutoQ.** Derived from corpus + playtest analysis (see *Provenance* below). Designed as a Quiddler-derivative game piece: data-tuned for the QBIM hand-3-through-10 mechanic, vowel-balanced for English word formation, with two new digraph cards (CH, CK) and a reordered bomb tier that lifts V above X in recognition of V's structural play difficulty.
 
+> **See also:** `POWER_DECK_RATIONALE.md` — defends each design decision against the corpus + playtest data, for stakeholders who want the *why* behind every number.
+
 ---
 
 ## 1. Deck composition

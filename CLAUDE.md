@@ -16,11 +16,6 @@ sam build && sam deploy
 
 # Deploy both bot and dashboard together (from this dir)
 bash deploy-all.sh
-
-# Integration tests — require env vars preloaded
-node --import ./test-env.mjs test-harness.mjs --auto        # Full 2-player auto game
-node --import ./test-env.mjs test-harness.mjs               # Interactive menu
-node --import ./test-env.mjs test-replay.mjs                # Replays real 7-player game
 ```
 
 **Windows/SAM path:** `/c/Program Files/Amazon/AWSSAMCLI/bin/sam.cmd` (deploy-all.sh uses this explicitly).
@@ -47,7 +42,6 @@ Web-app session tokens are HS256 JWTs signed by `jwt.mjs` with `SESSION_SECRET`.
 
 ## Gotchas (not derivable from reading code)
 
-- **Test env must be preloaded via `--import`.** DynamoDB table names are captured at module import time, so `test-env.mjs` has to run before any handler is imported. Running `node test-harness.mjs` without `--import ./test-env.mjs` will hit undefined tables.
 - **Circular imports via `await import()`.** `home.mjs` dynamically imports `score-entry.mjs` for the 10-minute auto-finalize. `game-flow.mjs` dynamically imports `score-entry.mjs` for `autoAwardStars` on player drop. Don't convert these to static imports.
 - **`ScanIndexForward: false`** on the `date-index` GSI returns games in *descending* `game_number` order. Take `[0]` for latest, not `[length-1]`.
 - **`samconfig.toml` contains secrets** (Slack bot token, signing secret) and is gitignored. Don't commit it.
@@ -62,7 +56,7 @@ Web-app session tokens are HS256 JWTs signed by `jwt.mjs` with `SESSION_SECRET`.
 - **`autoAwardStars(game, hand, handScores, announce)` — `announce` matters.** `true` on first completion (DMs + state transition), `false` on admin edits (recompute stars only, no DMs).
 - **Word parsing:** `+`, space, comma all equivalent separators. Hyphens assert explicit card boundaries (no alternatives offered). QU/TH/CL have distinct scores; the Slack score-entry modal prompts via radio when both readings are possible, while the web `/scores` endpoint auto-picks the highest-scoring breakdown (digraphs are never worth more than individual letters, so this is always score-optimal).
 - **All games deal hand+3 cards.** `dealSizeForHand(gameType, hand, mulligans)` in `cards.mjs` is the source of truth — every game type deals `hand + 3 - mulligans` (standard Quiddler rule). Max usable cards in words equals the deal size; the extra 3 are the natural "discards" players don't have to score with.
-- **Digital deck pool tracking is per-hand.** `game.dealt_cards[user#hand]` holds what they currently hold; `game.hand_seen_cards[user#hand]` accumulates the full hand the player has been shown (initial deal + every mulligan discard). Mulligan re-deals draw from `118 - hand_seen_cards`, so the pool can deplete within a hand. New hands reshuffle the full 118.
+- **Digital deck pool tracking is per-hand.** `game.dealt_cards[user#hand]` holds what they currently hold; `game.hand_seen_cards[user#hand]` accumulates the full hand the player has been shown (initial deal + every mulligan discard). Mulligan re-deals draw from `getDeckSize(game.deck_variant) - hand_seen_cards`, so the pool can deplete within a hand. New hands reshuffle the full deck. Deck size is variant-dependent: **118 for Quiddler, 126 for Power** — see `POWER_DECK.md`.
 - **Superlatives are tabled.** `postSuperlatives()` exists in `score-entry.mjs` but is commented out of `finalizeGame()` — waiting for a larger pool before re-enabling. Don't "fix" the commented call without checking.
 
 ## Related repo

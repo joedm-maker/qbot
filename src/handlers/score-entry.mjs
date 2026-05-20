@@ -1,5 +1,5 @@
 import { verifySlackSignature, parseSlackBody } from "../lib/verify.mjs";
-import { slack, CHANNEL, dmAllPlayers, dmUser } from "../lib/slack.mjs";
+import { slack, dmAllPlayers, dmUser } from "../lib/slack.mjs";
 import * as db from "../lib/db.mjs";
 import * as blocks from "../lib/blocks.mjs";
 import { getScoreOptions, getHandRange, formatWordsWithPoints, normalizeWords, dealSizeForHand, CARD_VALUES, getDeck, getDeckVariant } from "../lib/cards.mjs";
@@ -349,9 +349,12 @@ async function submitScore(payload) {
     return await saveScore(userId, game_id, hand, "", { score: 0, cards: 0, breakdown: "—" }, button_pressed_at, bankCard);
   }
 
-  // Check for mulligans — reduces max card count
-  const mulligans = await db.getMulliganCount(game_id, userId, hand);
+  // Check for mulligans — reduces max card count.
+  // Read the mulligan count off the already-fetched game record to avoid
+  // a second GetItem against the same row (getMulliganCount internally
+  // calls getGame).
   const gameForMax = await db.getGame(game_id);
+  const mulligans = gameForMax?.mulligans?.[`${userId}#${hand}`] || 0;
   const maxCards = dealSizeForHand(gameForMax?.game_type, hand, mulligans);
   const deckVariant = getDeckVariant(gameForMax);
 
@@ -486,10 +489,15 @@ export async function saveScore(userId, game_id, hand, wordsInput, chosen, butto
   const existingScores = await db.getScoresForGameHand(game_id, hand);
   const isEdit = existingScores.some((s) => s.player_slack_id === userId);
 
+  // Load the game once and reuse for every downstream check. Each of the
+  // edit/Qlander/Quickler/mulligan branches used to do its own getGame
+  // (or getMulliganCount, which internally does getGame) — that was 2-4
+  // GetItem reads against the same row per submission.
+  const game = await db.getGame(game_id);
+
   // Block edits to hands where all eligible players have submitted.
   // Gauntlet locks every hand on submission — no re-tries once recorded.
   if (isEdit) {
-    const game = await db.getGame(game_id);
     if (game.game_type === "Gauntlet") {
       return validationError(`Gauntlet: submitted hands are locked.`);
     }
@@ -505,9 +513,8 @@ export async function saveScore(userId, game_id, hand, wordsInput, chosen, butto
   // seeded at game-create/join), or (b) earlier hands of the current
   // game. Repeats within the same game count too: a Qlander game can't
   // include the same word twice from the same player.
-  const gameForRules = await db.getGame(game_id);
-  if (gameForRules.game_type === "Qlander" && wordsInput.trim()) {
-    const blocked = new Set(gameForRules.qlander_blocklist?.[userId] || []);
+  if (game.game_type === "Qlander" && wordsInput.trim()) {
+    const blocked = new Set(game.qlander_blocklist?.[userId] || []);
     // Fold in this player's prior plays in the current game (excluding
     // this same hand, which is being overwritten on an edit). Use the
     // whole-game query — existingScores above is just this hand.
@@ -532,17 +539,16 @@ export async function saveScore(userId, game_id, hand, wordsInput, chosen, butto
   }
 
   // Quickler timer validation — check if submission is within the 30s window
-  const gameForTimer = await db.getGame(game_id);
-  if (gameForTimer.game_type === "Quickler" && gameForTimer.quickler_timer_started_at && gameForTimer.quickler_timer_hand === hand && !isEdit) {
-    const timerStart = new Date(gameForTimer.quickler_timer_started_at).getTime() / 1000; // epoch seconds
+  if (game.game_type === "Quickler" && game.quickler_timer_started_at && game.quickler_timer_hand === hand && !isEdit) {
+    const timerStart = new Date(game.quickler_timer_started_at).getTime() / 1000; // epoch seconds
     const pressedAt = buttonPressedAt ? Number(buttonPressedAt) : Date.now() / 1000;
     if (pressedAt - timerStart > 30) {
       return validationError("Time's up! The 30-second Quickler timer expired.");
     }
   }
 
-  // Get mulligan count for this hand
-  const mulligans = await db.getMulliganCount(game_id, userId, hand);
+  // Mulligan count for this hand — read off the same loaded game.
+  const mulligans = game?.mulligans?.[`${userId}#${hand}`] || 0;
 
   // Preserve the original submission time across re-submissions so pace
   // tracking reflects when the player first thought they were done.
@@ -582,8 +588,9 @@ export async function saveScore(userId, game_id, hand, wordsInput, chosen, butto
   // OPEN → ACTIVE. For QBIM/Quickler/HotSwap/Qlander only hand 3 is
   // dealt initially so the first submission is always hand 3. Gauntlet
   // deals all 8 hands upfront and players pick freely, so the first
-  // submission can be any hand — accept any.
-  const game = await db.getGame(game_id);
+  // submission can be any hand — accept any. Reuses the `game` loaded
+  // at top of function; status transitions are idempotent so a slightly
+  // stale read is safe.
   if (game.status === "OPEN") {
     await db.updateGameStatus(game_id, "ACTIVE", {
       locked_at: new Date().toISOString(),
@@ -983,8 +990,8 @@ async function adminPickEdit(payload) {
   const existing = scores.find((s) => s.player_slack_id === playerId);
   const currentWords = existing?.words || "";
 
-  // Look up current mulligan count
-  const currentMulligans = await db.getMulliganCount(game_id, playerId, hand);
+  // Look up current mulligan count from the already-fetched game record.
+  const currentMulligans = game?.mulligans?.[`${playerId}#${hand}`] || 0;
 
   const playerRecord = await db.getPlayer(playerId);
   const playerName = playerRecord?.display_name || playerId;

@@ -295,10 +295,11 @@ async function takeMulligan(userId, event) {
   }
   // Digital deck: check pool BEFORE recording the mulligan. If the deck
   // can't fund the new (smaller) hand, reject without counting the mulligan.
+  const mulliganKey = `${userId}#${hand}`;
+  const mPrior = game?.mulligans?.[mulliganKey] || 0;
   if (game.deck_type === "Digital") {
-    const mPrior = await db.getMulliganCount(game_id, userId, hand);
     const target = dealSizeForHand(game.game_type, hand, mPrior + 1);
-    const seen = game.hand_seen_cards?.[`${userId}#${hand}`] || [];
+    const seen = game.hand_seen_cards?.[mulliganKey] || [];
     const variant = getDeckVariant(game);
     const poolRemaining = getDeckSize(variant) - seen.length;
     if (poolRemaining < target) {
@@ -311,12 +312,12 @@ async function takeMulligan(userId, event) {
     return jsonResp(400, { error: "Can't take another mulligan — would drop below the 2-card minimum (or you just took one)." });
   }
   // Digital deck: deal the new (smaller) hand from the pool. tryAddMulligan
-  // only touched the mulligans map, so hand_seen_cards on the original fetch
-  // is still current.
+  // incremented the mulligan count by exactly 1, so derive the new count
+  // locally instead of re-reading the game row.
   if (game.deck_type === "Digital") {
-    const mulligans = await db.getMulliganCount(game_id, userId, hand);
+    const mulligans = mPrior + 1;
     const cardCount = dealSizeForHand(game.game_type, hand, mulligans);
-    const seen = game.hand_seen_cards?.[`${userId}#${hand}`] || [];
+    const seen = game.hand_seen_cards?.[mulliganKey] || [];
     const variant = getDeckVariant(game);
     const { cards } = dealFromPool(seen, cardCount, variant);
     await db.recordDeal(game_id, userId, hand, cards);
@@ -358,7 +359,7 @@ async function submitScore(userId, event) {
     return jsonResp(200, { status: "submitted", raw_score: 0, breakdown: "—", words: "" });
   }
 
-  const mulligans = await db.getMulliganCount(game_id, userId, hand);
+  const mulligans = game?.mulligans?.[`${userId}#${hand}`] || 0;
   const maxCards = dealSizeForHand(game.game_type, hand, mulligans);
 
   // Digital games filter options to those actually formable from the player's

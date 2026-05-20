@@ -37,7 +37,8 @@ export async function startWordVote({ userId, game_id, hand, words, invalid_word
 
   let resolvedChosen = chosen;
   if (!resolvedChosen) {
-    resolvedChosen = computeChosen(words, hand, await db.getMulliganCount(game_id, userId, hand), getDeckVariant(game));
+    const mulligans = game?.mulligans?.[`${userId}#${hand}`] || 0;
+    resolvedChosen = computeChosen(words, hand, mulligans, getDeckVariant(game));
   }
 
   const vote = {

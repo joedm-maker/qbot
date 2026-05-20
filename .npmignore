@@ -1,0 +1,23 @@
+# Excludes from the Lambda bundle produced by `sam build` (which uses
+# NodejsNpmBuilder → npm pack, which respects .npmignore).
+# Keep entries in sync with what's purely dev-tooling / docs.
+
+# Dev tooling — analysis scripts + cached data files. Re-runnable from
+# a checkout, never imported by the runtime handlers.
+analysis/
+
+# Top-level dev/maintenance scripts. Not on the Lambda runtime path.
+archive-partial-games.mjs
+delete-test-games.mjs
+deploy-all.sh
+
+# Build artifacts (SAM auto-excludes these too, belt-and-suspenders)
+.aws-sam/
+
+# Local config + secrets (gitignored as well)
+samconfig.toml
+.env
+packaged.yaml
+
+# Editor / Claude session state (gitignored as well)
+.claude/

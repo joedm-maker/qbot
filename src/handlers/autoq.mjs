@@ -8,9 +8,8 @@ import crypto from "node:crypto";
 import { verifySlackSignature, parseSlackBody } from "../lib/verify.mjs";
 import { slack } from "../lib/slack.mjs";
 import { getHandRange, getDeckVariant } from "../lib/cards.mjs";
-import { dealForHand, filterOptionsAgainstDealt } from "../lib/autoq-deck.mjs";
+import { dealForHand, filterOptionsAgainstDealt, shuffleDeck, getDeckArray } from "../lib/autoq-deck.mjs";
 import { pickRandomBotNames, selectBotPlays, loadHistoricalScores, buildPool } from "../lib/autoq-bots.mjs";
-import { QUIDDLER_DECK } from "../lib/autoq-deck.mjs";
 import * as autoqDb from "../lib/autoq-db.mjs";
 import * as autoqBlocks from "../lib/autoq-blocks.mjs";
 import { renderHome } from "../lib/home.mjs";
@@ -128,8 +127,6 @@ async function handleAction(payload) {
       }
 
       // Build remaining pool and deal new hand using the game's deck variant.
-      const { buildPool } = await import("../lib/autoq-bots.mjs");
-      const { shuffleDeck, getDeckArray } = await import("../lib/autoq-deck.mjs");
       const pool = buildPool(getDeckArray(variant));
       for (const c of excluded) {
         pool.set(c, Math.max(0, (pool.get(c) || 0) - 1));
@@ -248,7 +245,6 @@ async function createAutoQGame(userId, opponentCount, deckVariant = "Quiddler") 
   // Pre-deal cards to human only, bots pick from remaining deck
   const dealtHands = {};
   const botPlays = {};
-  const { getDeckArray } = await import("../lib/autoq-deck.mjs");
   const sourceDeck = getDeckArray(deckVariant);
 
   for (const hand of hands) {

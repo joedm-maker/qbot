@@ -8,7 +8,6 @@
 import { verifySlackSignature, parseSlackBody } from "../lib/verify.mjs";
 import { handler as gameFlowHandler } from "./game-flow.mjs";
 import { handler as scoreEntryHandler } from "./score-entry.mjs";
-import { handler as leaderboardHandler } from "./leaderboard.mjs";
 import { handleStatsRequest } from "./stats-api.mjs";
 import { handleAuthRequest } from "./auth.mjs";
 import { handleWebGameRequest } from "./web-game.mjs";
@@ -51,11 +50,6 @@ const AUTOQ_CALLBACKS = new Set([
   "autoq_start_submit",
   "autoq_submit_score",
   "autoq_confirm_score",
-]);
-
-const LEADERBOARD_ACTIONS = new Set([
-  "qbim_view_scores",
-  "qbim_history",
 ]);
 
 export async function handler(event) {
@@ -111,7 +105,6 @@ export async function handler(event) {
     if (GAME_FLOW_ACTIONS.has(actionId)) return gameFlowHandler(event);
     if (SCORE_ACTIONS.has(actionId)) return scoreEntryHandler(event);
     if (AUTOQ_ACTIONS.has(actionId)) return autoqHandler(event);
-    if (LEADERBOARD_ACTIONS.has(actionId)) return leaderboardHandler(event);
     // Vote actions (qbim_vote_word, qbim_vote_yes, qbim_vote_no)
     if (actionId.startsWith("qbim_vote_")) return scoreEntryHandler(event);
     // Admin actions (dynamic IDs)

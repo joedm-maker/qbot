@@ -6,11 +6,6 @@ export function slack() {
   return _client;
 }
 
-/** Replace the Slack client with a mock (for testing). */
-export function setMockClient(mock) {
-  _client = mock;
-}
-
 export const CHANNEL = () => process.env.SLACK_CHANNEL_ID;
 
 /**

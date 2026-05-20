@@ -45,9 +45,11 @@ export async function handler(event) {
 
   console.log(`Auto-zeroing ${missing.length} player(s):`, missing);
 
-  // Auto-submit zero score for each missing player
+  // Auto-submit zero score for each missing player. Mulligan count is read
+  // from the already-fetched game record — getMulliganCount would do an
+  // extra GetItem per missing player.
   for (const pid of missing) {
-    const mulligans = await db.getMulliganCount(game_id, pid, hand);
+    const mulligans = game?.mulligans?.[`${pid}#${hand}`] || 0;
     await db.putScore({
       game_id,
       player_hand_key: `${pid}#${hand}`,
