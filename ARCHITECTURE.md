@@ -45,8 +45,6 @@ qbim-bot/
 ├── package-lock.json
 ├── samconfig.toml               # SAM deploy config with secrets (gitignored)
 ├── template.yaml                # SAM/CloudFormation template — Lambda, API Gateway, DynamoDB tables
-├── import-history.mjs           # Imports player stats from \\BIRD\Shared\QBIM\qbim_data.json
-├── import-all-history.mjs       # Imports full game+score history from same JSON
 └── src/
     ├── handlers/
     │   ├── router.mjs           # Lambda entry point — routes by httpMethod, action_id, callback_id
