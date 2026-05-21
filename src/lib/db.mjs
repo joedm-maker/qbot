@@ -5,6 +5,8 @@ import {
   PutCommand,
   QueryCommand,
   UpdateCommand,
+  ScanCommand,
+  DeleteCommand,
 } from "@aws-sdk/lib-dynamodb";
 
 const client = new DynamoDBClient({});
@@ -13,6 +15,8 @@ const ddb = DynamoDBDocumentClient.from(client);
 const GAMES_TABLE = process.env.GAMES_TABLE;
 const SCORES_TABLE = process.env.SCORES_TABLE;
 const PLAYERS_TABLE = process.env.PLAYERS_TABLE;
+const DICTIONARY_TABLE = process.env.DICTIONARY_TABLE;
+const VOTES_TABLE = process.env.VOTES_TABLE;
 
 // ── Games ──────────────────────────────────────────────
 
@@ -62,6 +66,21 @@ export async function getRecentGames(limit = 5) {
     return yItems || [];
   }
   return Items;
+}
+
+export async function getMaxGameNumber() {
+  const items = [];
+  let lastKey;
+  do {
+    const result = await ddb.send(new ScanCommand({
+      TableName: GAMES_TABLE,
+      ProjectionExpression: "game_number",
+      ExclusiveStartKey: lastKey,
+    }));
+    items.push(...(result.Items || []));
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
+  return items.reduce((max, item) => Math.max(max, item.game_number || 0), 0);
 }
 
 export async function createGame(game) {
@@ -132,6 +151,71 @@ export async function addMulligan(gameId, playerId, hand) {
   );
 }
 
+// Atomic, debounced mulligan. Rejects if the cap is already reached OR the
+// previous click for this player+hand was within `debounceMs`. Returns the
+// outcome so the handler can stay simple.
+/**
+ * Atomically increment a player's mulligan count for a hand, with both a
+ * cap (so they can't drop below the 2-card word minimum) and a 2s debounce
+ * (to swallow Slack retries and double-taps). `cap` defaults to hand-2
+ * for QBIM-style games; Quickler callers pass hand+1 since the dealt hand
+ * starts at hand+3.
+ */
+export async function tryAddMulligan(gameId, playerId, hand, cap = hand - 2, debounceMs = 2000) {
+  const key = `${playerId}#${hand}`;
+  const now = Date.now();
+  const cutoff = now - debounceMs;
+
+  // Ensure both maps exist. if_not_exists makes this idempotent.
+  await ddb.send(
+    new UpdateCommand({
+      TableName: GAMES_TABLE,
+      Key: { game_id: gameId },
+      UpdateExpression:
+        "SET mulligans = if_not_exists(mulligans, :empty), mulligan_ts = if_not_exists(mulligan_ts, :empty)",
+      ExpressionAttributeValues: { ":empty": {} },
+    })
+  );
+
+  try {
+    await ddb.send(
+      new UpdateCommand({
+        TableName: GAMES_TABLE,
+        Key: { game_id: gameId },
+        UpdateExpression:
+          "SET mulligans.#k = if_not_exists(mulligans.#k, :zero) + :one, mulligan_ts.#k = :now",
+        ConditionExpression:
+          "(attribute_not_exists(mulligans.#k) OR mulligans.#k < :cap) AND (attribute_not_exists(mulligan_ts.#k) OR mulligan_ts.#k < :cutoff)",
+        ExpressionAttributeNames: { "#k": key },
+        ExpressionAttributeValues: {
+          ":zero": 0,
+          ":one": 1,
+          ":cap": cap,
+          ":cutoff": cutoff,
+          ":now": now,
+        },
+      })
+    );
+    return true;
+  } catch (err) {
+    if (err.name === "ConditionalCheckFailedException") return false;
+    throw err;
+  }
+}
+
+export async function setMulliganCount(gameId, playerId, hand, count) {
+  const key = `${playerId}#${hand}`;
+  await ddb.send(
+    new UpdateCommand({
+      TableName: GAMES_TABLE,
+      Key: { game_id: gameId },
+      UpdateExpression: "SET mulligans.#k = :c",
+      ExpressionAttributeNames: { "#k": key },
+      ExpressionAttributeValues: { ":c": count },
+    })
+  );
+}
+
 export async function getMulliganCount(gameId, playerId, hand) {
   const game = await getGame(gameId);
   return game?.mulligans?.[`${playerId}#${hand}`] || 0;
@@ -178,6 +262,36 @@ export async function removePlayerFromGame(gameId, slackId) {
 
 export async function putScore(score) {
   await ddb.send(new PutCommand({ TableName: SCORES_TABLE, Item: score }));
+}
+
+export async function getAllScores() {
+  const items = [];
+  let lastKey;
+  do {
+    const result = await ddb.send(new ScanCommand({
+      TableName: SCORES_TABLE,
+      ExclusiveStartKey: lastKey,
+    }));
+    items.push(...(result.Items || []));
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
+  return items;
+}
+
+export async function getScoresWithWords() {
+  const items = [];
+  let lastKey;
+  do {
+    const result = await ddb.send(new ScanCommand({
+      TableName: SCORES_TABLE,
+      FilterExpression: "raw_score > :z AND words <> :empty AND breakdown <> :empty",
+      ExpressionAttributeValues: { ":z": 0, ":empty": "" },
+      ExclusiveStartKey: lastKey,
+    }));
+    items.push(...(result.Items || []));
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
+  return items;
 }
 
 export async function getScoresForGame(gameId) {
@@ -246,6 +360,26 @@ export async function upsertPlayer(slackId, displayName) {
   );
 }
 
+export async function upsertPlayerOAuthProfile(slackId, { displayName, email, avatarUrl }) {
+  const sets = [
+    "display_name = :dn",
+    "games_played = if_not_exists(games_played, :zero)",
+    "all_time_wins = if_not_exists(all_time_wins, :zero)",
+    "all_time_stars = if_not_exists(all_time_stars, :zero)",
+  ];
+  const values = { ":dn": displayName, ":zero": 0 };
+  if (email) { sets.push("email = :em"); values[":em"] = email; }
+  if (avatarUrl) { sets.push("avatar_url = :av"); values[":av"] = avatarUrl; }
+  await ddb.send(
+    new UpdateCommand({
+      TableName: PLAYERS_TABLE,
+      Key: { slack_id: slackId },
+      UpdateExpression: `SET ${sets.join(", ")}`,
+      ExpressionAttributeValues: values,
+    })
+  );
+}
+
 export async function setPlayerPreference(slackId, key, value) {
   await ddb.send(
     new UpdateCommand({
@@ -269,13 +403,16 @@ export async function initPreferences(slackId) {
   );
 }
 
-export async function incrementPlayerStats(slackId, { gamesPlayed = 0, wins = 0, stars = 0, mulligans = 0 }) {
+export async function incrementPlayerStats(slackId, { gamesPlayed = 0, incompleteGames = 0, wins = 0, stars = 0, mulligans = 0, handScrewed = 0, screwedOthers = 0 }) {
   const parts = [];
   const values = {};
   if (gamesPlayed) { parts.push("games_played :gp"); values[":gp"] = gamesPlayed; }
+  if (incompleteGames) { parts.push("incomplete_games :ig"); values[":ig"] = incompleteGames; }
   if (wins) { parts.push("all_time_wins :w"); values[":w"] = wins; }
   if (stars) { parts.push("all_time_stars :st"); values[":st"] = stars; }
   if (mulligans) { parts.push("all_time_mulligans :ml"); values[":ml"] = mulligans; }
+  if (handScrewed) { parts.push("times_hand_screwed :hs"); values[":hs"] = handScrewed; }
+  if (screwedOthers) { parts.push("times_screwed_others :so"); values[":so"] = screwedOthers; }
   if (!parts.length) return;
 
   await ddb.send(
@@ -284,6 +421,318 @@ export async function incrementPlayerStats(slackId, { gamesPlayed = 0, wins = 0,
       Key: { slack_id: slackId },
       UpdateExpression: `ADD ${parts.join(", ")}`,
       ExpressionAttributeValues: values,
+    })
+  );
+}
+
+// ── Achievements ──────────────────────────────────────
+
+/**
+ * Achievement catalog — single source of truth for id, display name, emoji, and description.
+ */
+export const ACHIEVEMENTS = {
+  "strategic-retreat": { emoji: ":shield:", name: "Strategic Retreat", description: "Took a mulligan and still won the round" },
+};
+
+/**
+ * Award an achievement to a player. No-ops if already earned.
+ * Returns true if newly awarded, false if already had it.
+ */
+export async function addAchievement(slackId, achievementId, meta = {}) {
+  try {
+    await ddb.send(
+      new UpdateCommand({
+        TableName: PLAYERS_TABLE,
+        Key: { slack_id: slackId },
+        UpdateExpression: "SET achievements.#aid = :meta",
+        ConditionExpression: "attribute_not_exists(achievements.#aid)",
+        ExpressionAttributeNames: { "#aid": achievementId },
+        ExpressionAttributeValues: {
+          ":meta": { earned_at: new Date().toISOString(), ...meta },
+        },
+      })
+    );
+    return true;
+  } catch (err) {
+    if (err.name === "ConditionalCheckFailedException") return false;
+    // If achievements map doesn't exist yet, create it with this entry
+    if (err.name === "ValidationException") {
+      await ddb.send(
+        new UpdateCommand({
+          TableName: PLAYERS_TABLE,
+          Key: { slack_id: slackId },
+          UpdateExpression: "SET achievements = :map",
+          ConditionExpression: "attribute_not_exists(achievements)",
+          ExpressionAttributeValues: {
+            ":map": { [achievementId]: { earned_at: new Date().toISOString(), ...meta } },
+          },
+        })
+      );
+      return true;
+    }
+    throw err;
+  }
+}
+
+// ── Regular Players Query ───────────────────────────────
+
+export async function getRegularPlayers(minGames) {
+  const items = [];
+  let lastKey;
+  do {
+    const result = await ddb.send(new ScanCommand({
+      TableName: PLAYERS_TABLE,
+      FilterExpression: "games_played > :min",
+      ExpressionAttributeValues: { ":min": minGames },
+      ExclusiveStartKey: lastKey,
+    }));
+    items.push(...(result.Items || []));
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
+  return items;
+}
+
+// ── Game Attribute Update ───────────────────────────────
+
+/**
+ * Record a deal for a player on a given hand. Updates dealt_cards (what
+ * they currently hold) and extends hand_seen_cards (everything they've
+ * been dealt this hand — initial + every mulligan discard). The seen set
+ * is per-hand, so a new hand starts fresh from the full 118-card deck.
+ */
+export async function recordDeal(gameId, slackId, hand, cards) {
+  const game = await getGame(gameId);
+  const dealt = game?.dealt_cards || {};
+  const seen = game?.hand_seen_cards || {};
+  const key = `${slackId}#${hand}`;
+  dealt[key] = cards;
+  seen[key] = [...(seen[key] || []), ...cards];
+  await ddb.send(new UpdateCommand({
+    TableName: GAMES_TABLE,
+    Key: { game_id: gameId },
+    UpdateExpression: "SET dealt_cards = :d, hand_seen_cards = :s",
+    ExpressionAttributeValues: { ":d": dealt, ":s": seen },
+  }));
+}
+
+/**
+ * Qlander: read the player's persisted blocklist (last-20 words union).
+ * Maintained at finalizeGame time to keep game-start latency-free.
+ * Returns null when no entry exists (fall back to compute).
+ */
+export async function getPlayerQlanderBlocklist(slackId) {
+  const { Item } = await ddb.send(
+    new GetCommand({ TableName: PLAYERS_TABLE, Key: { slack_id: slackId } })
+  );
+  return Item?.qlander_blocklist || null;
+}
+
+export async function setPlayerQlanderBlocklist(slackId, words) {
+  await ddb.send(new UpdateCommand({
+    TableName: PLAYERS_TABLE,
+    Key: { slack_id: slackId },
+    UpdateExpression: "SET qlander_blocklist = :w, qlander_blocklist_updated_at = :t",
+    ExpressionAttributeValues: { ":w": [...words], ":t": new Date().toISOString() },
+  }));
+}
+
+/**
+ * Qlander: compute the set of words a player has personally played in
+ * their last N fully-complete games (any game type). A game is "complete
+ * for this player" when they have a score record for every hand H3-H10
+ * AND the game's status is COMPLETE (so partial/archived rounds don't
+ * contribute). Returns a Set of normalized words (lowercase, alpha-only).
+ *
+ * Used at Qlander game start to seed game.qlander_blocklist[playerId]
+ * so subsequent score submissions can validate against past plays.
+ */
+export async function computeQlanderBlocklist(slackId, limit = 20) {
+  // Pull every score this player has — small enough to scan rather than
+  // maintain a GSI for now (~few hundred rows per active player).
+  const allScores = [];
+  let lastKey;
+  do {
+    const result = await ddb.send(new ScanCommand({
+      TableName: SCORES_TABLE,
+      FilterExpression: "player_slack_id = :pid",
+      ExpressionAttributeValues: { ":pid": slackId },
+      ExclusiveStartKey: lastKey,
+    }));
+    allScores.push(...(result.Items || []));
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
+
+  if (!allScores.length) return new Set();
+
+  // Group hands played per game.
+  const handsByGame = new Map();
+  for (const s of allScores) {
+    if (!handsByGame.has(s.game_id)) handsByGame.set(s.game_id, new Set());
+    handsByGame.get(s.game_id).add(s.hand);
+  }
+
+  // Identify games where this player played all 8 hands AND the game
+  // is COMPLETE (skip ACTIVE/ARCHIVED). Sort newest first.
+  const ALL_HANDS = [3, 4, 5, 6, 7, 8, 9, 10];
+  const candidateIds = [...handsByGame.entries()]
+    .filter(([, hands]) => ALL_HANDS.every((h) => hands.has(h)))
+    .map(([gid]) => gid);
+  const candidateGames = await Promise.all(candidateIds.map((gid) => getGame(gid)));
+  const completeGames = candidateGames
+    .filter((g) => g && g.status === "COMPLETE")
+    .sort((a, b) => (b.game_number || 0) - (a.game_number || 0))
+    .slice(0, limit);
+
+  const recentIds = new Set(completeGames.map((g) => g.game_id));
+  const blocked = new Set();
+  for (const s of allScores) {
+    if (!recentIds.has(s.game_id) || !s.words) continue;
+    const tokens = String(s.words).split(/[\s+,]+/).filter(Boolean);
+    for (const t of tokens) {
+      const w = t.toLowerCase().replace(/[^a-z]/g, "");
+      if (w.length >= 2) blocked.add(w);
+    }
+  }
+  return blocked;
+}
+
+/**
+ * Hot Swap: persist the card a player is carrying into their next hand.
+ * Pass `card = null` to clear the entry. Stored as `banked_cards[slackId]`
+ * on the game record so the next-hand deal can prepend it and clear.
+ */
+export async function setBankedCard(gameId, slackId, card) {
+  const game = await getGame(gameId);
+  const banked = { ...(game?.banked_cards || {}) };
+  if (card == null) delete banked[slackId];
+  else banked[slackId] = card;
+  await ddb.send(new UpdateCommand({
+    TableName: GAMES_TABLE,
+    Key: { game_id: gameId },
+    UpdateExpression: "SET banked_cards = :b",
+    ExpressionAttributeValues: { ":b": banked },
+  }));
+}
+
+export async function updateGameAttr(gameId, attrs) {
+  let updateExpr = "SET";
+  const names = {};
+  const values = {};
+  const parts = [];
+
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v === null) {
+      // REMOVE null attributes instead of setting them
+      continue;
+    }
+    parts.push(` #${k} = :${k}`);
+    names[`#${k}`] = k;
+    values[`:${k}`] = v;
+  }
+
+  // Handle REMOVE for null values
+  const removeParts = Object.entries(attrs)
+    .filter(([, v]) => v === null)
+    .map(([k]) => `#${k}`);
+  const removeNames = Object.fromEntries(
+    Object.entries(attrs)
+      .filter(([, v]) => v === null)
+      .map(([k]) => [`#${k}`, k])
+  );
+
+  let expr = "";
+  const allNames = { ...names, ...removeNames };
+  if (parts.length) expr += `SET${parts.join(",")}`;
+  if (removeParts.length) expr += ` REMOVE ${removeParts.join(", ")}`;
+
+  if (!expr) return;
+
+  const params = {
+    TableName: GAMES_TABLE,
+    Key: { game_id: gameId },
+    UpdateExpression: expr,
+    ExpressionAttributeNames: allNames,
+  };
+  if (Object.keys(values).length) params.ExpressionAttributeValues = values;
+
+  await ddb.send(new UpdateCommand(params));
+}
+
+// ── Delete ──────────────────────────────────────────────
+
+export async function deleteAllScoresForGame(gameId) {
+  const scores = await getScoresForGame(gameId);
+  for (const s of scores) {
+    await ddb.send(
+      new DeleteCommand({
+        TableName: SCORES_TABLE,
+        Key: { game_id: s.game_id, player_hand_key: s.player_hand_key },
+      })
+    );
+  }
+}
+
+export async function deleteGame(gameId) {
+  await ddb.send(
+    new DeleteCommand({ TableName: GAMES_TABLE, Key: { game_id: gameId } })
+  );
+}
+
+// ── Dictionary ─────────────────────────────────────────
+
+export async function getDictionaryWord(word) {
+  if (!DICTIONARY_TABLE) return null;
+  const { Item } = await ddb.send(
+    new GetCommand({ TableName: DICTIONARY_TABLE, Key: { word } })
+  );
+  return Item || null;
+}
+
+export async function putDictionaryWord(item) {
+  if (!DICTIONARY_TABLE) return;
+  await ddb.send(
+    new PutCommand({ TableName: DICTIONARY_TABLE, Item: item })
+  );
+}
+
+export async function incrementDictionaryPlayCount(word) {
+  if (!DICTIONARY_TABLE) return;
+  await ddb.send(
+    new UpdateCommand({
+      TableName: DICTIONARY_TABLE,
+      Key: { word },
+      UpdateExpression: "ADD play_count :one",
+      ExpressionAttributeValues: { ":one": 1 },
+    })
+  );
+}
+
+// ── Votes ──────────────────────────────────────────────
+
+export async function getVote(voteId) {
+  if (!VOTES_TABLE) return null;
+  const { Item } = await ddb.send(
+    new GetCommand({ TableName: VOTES_TABLE, Key: { vote_id: voteId } })
+  );
+  return Item || null;
+}
+
+export async function putVote(vote) {
+  if (!VOTES_TABLE) return;
+  await ddb.send(
+    new PutCommand({ TableName: VOTES_TABLE, Item: vote })
+  );
+}
+
+export async function updateVoteStatus(voteId, status) {
+  if (!VOTES_TABLE) return;
+  await ddb.send(
+    new UpdateCommand({
+      TableName: VOTES_TABLE,
+      Key: { vote_id: voteId },
+      UpdateExpression: "SET #s = :s",
+      ExpressionAttributeNames: { "#s": "status" },
+      ExpressionAttributeValues: { ":s": status },
     })
   );
 }

@@ -1,10 +1,19 @@
 /**
- * Quiddler card deck and scoring logic.
+ * Card decks, scoring values, and word parsing.
  *
- * Valid cards: A–Z (single letters) plus digraphs QU, IN, ER, TH, CL.
+ * Two deck variants are supported:
+ *   - "Quiddler" — the original 118-card deck (A–Z + QU, IN, ER, TH, CL digraphs).
+ *   - "Power"    — the 126-card data-tuned variant (adds CH and CK digraphs; see POWER_DECK.md).
+ *
+ * All scoring/parsing functions accept an optional `deckVariant` parameter defaulting
+ * to `"Quiddler"`, so existing callsites that don't pass it behave exactly as before.
+ *
  * Words can be entered as "quiz" or "qu-i-z" (hyphens delineate cards).
  *
- * Scoring notes:
+ * Game types:
+ *   QBIM, Quickler, AutoQ all use hands 3–10 (8 hands).
+ *
+ * Scoring notes (Quiddler deck):
  *   IN (7) = I (2) + N (5)  — same score, use whichever fits hand limit
  *   ER (7) = E (2) + R (5)  — same score, use whichever fits hand limit
  *   QU (9) ≠ Q (15) + U (4) = 19  — different score, player chooses
@@ -12,7 +21,9 @@
  *   CL (10) ≠ C (8) + L (3) = 11  — different score, player chooses
  */
 
-export const CARD_VALUES = {
+// ── Deck definitions ────────────────────────────────────
+
+const QUIDDLER_VALUES = {
   A: 2,  B: 8,  C: 8,  D: 5,  E: 2,  F: 6,  G: 6,  H: 7,
   I: 2,  J: 13, K: 8,  L: 3,  M: 5,  N: 5,  O: 2,  P: 6,
   Q: 15, R: 5,  S: 3,  T: 3,  U: 4,  V: 11, W: 10, X: 12,
@@ -20,14 +31,146 @@ export const CARD_VALUES = {
   ER: 7, CL: 10, IN: 7, TH: 9, QU: 9,
 };
 
-const DIGRAPHS = ["QU", "IN", "ER", "TH", "CL"];
+const POWER_VALUES = {
+  A: 2,  B: 8,  C: 8,  D: 5,  E: 2,  F: 6,  G: 5,  H: 7,
+  I: 2,  J: 12, K: 8,  L: 3,  M: 5,  N: 4,  O: 2,  P: 5,
+  Q: 15, R: 4,  S: 3,  T: 3,  U: 5,  V: 11, W: 9,  X: 10,
+  Y: 5,  Z: 13,
+  QU: 9, IN: 6, ER: 6, CL: 10, TH: 9, CH: 11, CK: 12,
+};
 
-// Digraphs where the score differs from individual cards — player must choose
-const SCORE_AFFECTING = new Set(["QU", "TH", "CL"]);
+const QUIDDLER_DIGRAPHS = ["QU", "IN", "ER", "TH", "CL"];
+const POWER_DIGRAPHS = ["QU", "IN", "ER", "TH", "CL", "CH", "CK"];
 
-// Digraphs where the score is the same — auto-pick based on hand fit
-// IN = I+N, ER = E+R
-const NEUTRAL_DIGRAPHS = new Set(["IN", "ER"]);
+// Digraphs where the score differs from constituent letters — player must pick which reading to use.
+const QUIDDLER_SCORE_AFFECTING = new Set(["QU", "TH", "CL"]);
+const POWER_SCORE_AFFECTING = new Set(["QU", "TH", "CL", "CH", "CK"]);
+
+// Digraphs where the digraph score equals the sum of constituents — auto-resolved by hand fit.
+const QUIDDLER_NEUTRAL_DIGRAPHS = new Set(["IN", "ER"]);
+const POWER_NEUTRAL_DIGRAPHS = new Set(["IN", "ER"]);
+
+export const DECKS = {
+  Quiddler: {
+    values: QUIDDLER_VALUES,
+    digraphs: QUIDDLER_DIGRAPHS,
+    scoreAffecting: QUIDDLER_SCORE_AFFECTING,
+    neutralDigraphs: QUIDDLER_NEUTRAL_DIGRAPHS,
+  },
+  Power: {
+    values: POWER_VALUES,
+    digraphs: POWER_DIGRAPHS,
+    scoreAffecting: POWER_SCORE_AFFECTING,
+    neutralDigraphs: POWER_NEUTRAL_DIGRAPHS,
+  },
+};
+
+export function getDeck(variant) {
+  return DECKS[variant] || DECKS.Quiddler;
+}
+
+/**
+ * Read a game's deck variant with safe fallback to "Quiddler" for legacy
+ * records or undefined games. Use this everywhere a scoring/display
+ * function needs the deck context.
+ */
+export function getDeckVariant(game) {
+  return game?.deck_variant || "Quiddler";
+}
+
+// Backward-compat alias: existing imports of CARD_VALUES point at the Quiddler values.
+// New code should prefer getDeck(variant).values.
+export const CARD_VALUES = QUIDDLER_VALUES;
+
+// ── Hand sizing ─────────────────────────────────────────
+
+/**
+ * Get the hand range for a game type.
+ */
+export function getHandRange(gameType) {
+  // QBIM, Quickler, and AutoQ all use hands 3-10.
+  return [3, 4, 5, 6, 7, 8, 9, 10];
+}
+
+/**
+ * How many cards to deal for a given hand. All three game types (QBIM,
+ * Quickler, AutoQ) deal `hand + 3` cards — the extra 3 are "discards" the
+ * player doesn't need to score with (standard Quiddler rule). Mulligans
+ * subtract from the dealt count one card at a time.
+ */
+export function dealSizeForHand(gameType, hand, mulligans = 0) {
+  return hand + 3 - mulligans;
+}
+
+// ── Display helpers ─────────────────────────────────────
+
+const SUPERSCRIPT = { "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴", "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹" };
+
+function toSuperscript(n) {
+  return String(n).split("").map((d) => SUPERSCRIPT[d] || d).join("");
+}
+
+/**
+ * Format a word submission with superscript point values per card.
+ * Input: "fox+quiz" or "qu-i-z fox"
+ * Output: "F⁶O²X¹²  QU⁹I²Z¹⁴"
+ */
+export function formatWordsWithPoints(input, deckVariant = "Quiddler") {
+  if (!input || !input.trim()) return "—";
+  const { values, digraphs } = getDeck(deckVariant);
+  const wordTokens = input.replace(/[\s,+]+/g, " ").trim().split(" ").filter(Boolean);
+
+  return wordTokens.map((token) => {
+    const upper = token.toUpperCase().trim();
+    const cards = [];
+
+    if (upper.includes("-")) {
+      // Explicit card boundaries
+      for (const t of upper.split("-")) {
+        if (t && values[t] !== undefined) cards.push(t);
+        else if (t) cards.push(t);
+      }
+    } else {
+      // Greedy parse: try digraphs first
+      let i = 0;
+      while (i < upper.length) {
+        let matched = false;
+        if (i + 1 < upper.length) {
+          const pair = upper.slice(i, i + 2);
+          if (digraphs.includes(pair)) {
+            cards.push(pair);
+            i += 2;
+            matched = true;
+          }
+        }
+        if (!matched) {
+          cards.push(upper[i]);
+          i++;
+        }
+      }
+    }
+
+    return cards.map((c) => {
+      const val = values[c.toUpperCase()];
+      if (val !== undefined) return `${c.toLowerCase()}${toSuperscript(val)}`;
+      return c.toLowerCase();
+    }).join("");
+  }).join("  ");
+}
+
+/**
+ * Canonicalize a words submission: strip leading/trailing separators,
+ * collapse internal runs of (+, whitespace, comma) into a single "+".
+ * "rump+" → "rump", "hi+clef" → "hi+clef", "  a ,, b " → "a+b".
+ */
+export function normalizeWords(input) {
+  return String(input || "")
+    .replace(/[\s,+]+/g, " ")
+    .trim()
+    .split(" ")
+    .filter(Boolean)
+    .join("+");
+}
 
 // ── Word Parsing ────────────────────────────────────────
 
@@ -35,12 +178,12 @@ const NEUTRAL_DIGRAPHS = new Set(["IN", "ER"]);
  * Parse a hyphenated word into explicit cards.
  * @returns {{ cards: string[], invalid: string[] }}
  */
-function parseExplicit(upper) {
+function parseExplicit(upper, values) {
   const cards = [];
   const invalid = [];
   for (const token of upper.split("-")) {
     if (!token) continue;
-    if (CARD_VALUES[token] !== undefined) {
+    if (values[token] !== undefined) {
       cards.push(token);
     } else {
       invalid.push(token);
@@ -53,7 +196,9 @@ function parseExplicit(upper) {
  * Find ALL possible card breakdowns for an unhyphenated word.
  * Returns an array of card arrays, e.g. [["QU","I","Z"], ["Q","U","I","Z"]]
  */
-function allBreakdowns(upper) {
+export function allBreakdowns(upper, deckVariant = "Quiddler") {
+  const { values, digraphs } = getDeck(deckVariant);
+
   // Strip any non-alpha characters
   const clean = upper.replace(/[^A-Z]/g, "");
   if (!clean) return [];
@@ -69,7 +214,7 @@ function allBreakdowns(upper) {
     // Try digraphs (2-char)
     if (pos + 1 < clean.length) {
       const pair = clean.slice(pos, pos + 2);
-      if (DIGRAPHS.includes(pair)) {
+      if (digraphs.includes(pair)) {
         cards.push(pair);
         dfs(pos + 2, cards);
         cards.pop();
@@ -78,7 +223,7 @@ function allBreakdowns(upper) {
 
     // Try single letter
     const ch = clean[pos];
-    if (CARD_VALUES[ch] !== undefined) {
+    if (values[ch] !== undefined) {
       cards.push(ch);
       dfs(pos + 1, cards);
       cards.pop();
@@ -92,8 +237,8 @@ function allBreakdowns(upper) {
 /**
  * Calculate score for a card array.
  */
-function scoreCards(cards) {
-  return cards.reduce((sum, c) => sum + (CARD_VALUES[c] || 0), 0);
+function scoreCards(cards, values) {
+  return cards.reduce((sum, c) => sum + (values[c] || 0), 0);
 }
 
 // ── Score Options ───────────────────────────────────────
@@ -108,38 +253,52 @@ function scoreCards(cards) {
  *
  * @param {string} input — e.g. "quiz fox" or "qu-i-z fox"
  * @param {number} handSize — max cards allowed (e.g. 3 for hand 3)
+ * @param {string} [deckVariant] — "Quiddler" (default) or "Power"
  * @returns {{ options: Array<{ score: number, cards: number, breakdown: string }>, invalid: string[] }}
  */
-export function getScoreOptions(input, handSize) {
+export function getScoreOptions(input, handSize, deckVariant = "Quiddler") {
+  const { values } = getDeck(deckVariant);
+
   // Normalize whitespace and word separators (spaces, commas, + signs)
   const cleaned = input.replace(/[\s,+]+/g, " ").trim();
-  if (!cleaned) return { options: [], invalid: [] };
+  if (!cleaned) return { options: [], invalid: [], tooShort: [] };
 
   const wordTokens = cleaned.split(" ").filter((t) => t.length > 0);
-  if (wordTokens.length === 0) return { options: [], invalid: [] };
+  if (wordTokens.length === 0) return { options: [], invalid: [], tooShort: [] };
 
   const allInvalid = [];
+  const tooShort = [];
 
   // Get breakdowns per word
   const perWord = wordTokens.map((token) => {
     const upper = token.toUpperCase().trim();
     if (!upper) return [{ cards: [], raw: token }];
     if (upper.includes("-")) {
-      const { cards, invalid } = parseExplicit(upper);
+      const { cards, invalid } = parseExplicit(upper, values);
       allInvalid.push(...invalid);
+      if (!invalid.length && cards.length < 2) tooShort.push(token);
       return [{ cards, raw: token }];
     }
-    const breakdowns = allBreakdowns(upper);
+    const breakdowns = allBreakdowns(upper, deckVariant);
     if (breakdowns.length === 0) {
       // Every character was invalid
       allInvalid.push(token);
       return [{ cards: [], raw: token }];
     }
-    return breakdowns.map((cards) => ({ cards, raw: token }));
+    // 2-card minimum per word — drop any 1-card interpretations
+    const filtered = breakdowns.filter((bd) => bd.length >= 2);
+    if (filtered.length === 0) {
+      tooShort.push(token);
+      return [{ cards: [], raw: token }];
+    }
+    return filtered.map((cards) => ({ cards, raw: token }));
   });
 
   if (allInvalid.length) {
-    return { options: [], invalid: allInvalid };
+    return { options: [], invalid: allInvalid, tooShort };
+  }
+  if (tooShort.length) {
+    return { options: [], invalid: [], tooShort };
   }
 
   // Cartesian product of all word breakdowns
@@ -152,7 +311,7 @@ export function getScoreOptions(input, handSize) {
     const totalCards = allCards.length;
     if (totalCards > handSize) continue;
 
-    const totalScore = scoreCards(allCards);
+    const totalScore = scoreCards(allCards, values);
     const breakdown = combo.map((w) => w.cards.join("-")).join("  ");
     rawOptions.push({ score: totalScore, cards: totalCards, breakdown, allCards });
   }
@@ -179,7 +338,7 @@ export function getScoreOptions(input, handSize) {
     .map(({ score, cards, breakdown }) => ({ score, cards, breakdown }))
     .sort((a, b) => b.score - a.score);
 
-  return { options, invalid: [] };
+  return { options, invalid: [], tooShort: [] };
 }
 
 /**
@@ -193,4 +352,3 @@ function cartesian(arrays) {
     [[]]
   );
 }
-

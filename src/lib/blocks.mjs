@@ -1,3 +1,6 @@
+import { getHandRange } from "./cards.mjs";
+import { ACHIEVEMENTS } from "./db.mjs";
+
 // ── Block Kit helpers ───────────────────────────────────
 
 /**
@@ -7,6 +10,7 @@ export function homeNoGame() {
   return {
     type: "home",
     blocks: [
+      header("🎴 QBIM"),
       section("No game today yet."),
       actions([button("Start Game", "qbim_start_game")]),
     ],
@@ -22,7 +26,8 @@ export function homeLobby(game, playerNames, userInGame) {
     : "_No players yet_";
 
   const blks = [
-    section(`*Game #${game.game_number}* — ${game.game_type}\nStarted by <@${game.host_slack_id}>`),
+    header(`🎮 Game #${game.game_number} — ${game.game_type}`),
+    context([`Started by <@${game.host_slack_id}>`]),
     divider(),
     section(`*Players:*\n${roster}`),
   ];
@@ -37,9 +42,10 @@ export function homeLobby(game, playerNames, userInGame) {
 
   // Empty score table
   blks.push(divider());
-  blks.push(section("*Scoreboard*"));
-  const handLabels = [3, 4, 5, 6, 7, 8, 9, 10].map((h) => `H${h}`).join("  |  ");
-  const emptyScores = [3, 4, 5, 6, 7, 8, 9, 10].map(() => "·").join("    |    ");
+  blks.push(header("📊 Scoreboard"));
+  const hands = getHandRange(game.game_type);
+  const handLabels = hands.map((h) => `H${h}`).join("  |  ");
+  const emptyScores = hands.map(() => "·").join("    |    ");
   for (const name of playerNames) {
     blks.push(section(`*${name}*\n${handLabels}\n${emptyScores}`));
   }
@@ -50,42 +56,107 @@ export function homeLobby(game, playerNames, userInGame) {
 /**
  * Home tab when game is ACTIVE — shows current hand prompt + full score grid.
  */
-export function homeActive(game, playerNames, round, totals, rawScores, viewerId, showOwnScore) {
+export function homeActive(game, playerNames, round, totals, rawScores, viewerId, showOwnScore, missingNames) {
   const blks = [
-    section(`*Game #${game.game_number}* — ${game.game_type} — _In Progress_`),
+    header(`🎮 Game #${game.game_number} — ${game.game_type}`),
+    context(["_In Progress_"]),
     divider(),
   ];
 
-  if (round && round.hand) {
+  // Quickler timer info
+  const hasQuicklerTimer = game.game_type === "Quickler" && game.quickler_timer_started_at && game.quickler_timer_hand === (round && round.hand);
+  let quicklerTimerNote = "";
+  if (hasQuicklerTimer) {
+    const elapsed = Math.floor((Date.now() - new Date(game.quickler_timer_started_at).getTime()) / 1000);
+    const remaining = Math.max(0, 30 - elapsed);
+    quicklerTimerNote = remaining > 0 ? `⏱️ *Quickler Timer: ~${remaining}s remaining!*` : "⏱️ *Time's up!*";
+  }
+
+  // Gauntlet: replace the linear "Enter Hand X Score" with a per-hand
+  // picker — one button per unsubmitted hand. The /play 4×2 grid doesn't
+  // translate to Block Kit, so this renders as a status line plus one or
+  // two actions rows (Slack caps actions at 5 buttons per block).
+  if (game.game_type === "Gauntlet") {
+    const submittedByMe = new Set();
+    const scoreByHand = new Map();
+    for (const s of rawScores || []) {
+      if (s.player_slack_id !== viewerId) continue;
+      submittedByMe.add(s.hand);
+      scoreByHand.set(s.hand, s);
+    }
+    const dealtByMe = new Set();
+    for (const key of Object.keys(game.dealt_cards || {})) {
+      const [pid, hStr] = key.split("#");
+      if (pid === viewerId) dealtByMe.add(Number(hStr));
+    }
+    const allHands = [3, 4, 5, 6, 7, 8, 9, 10];
+    const statusLine = allHands.map((h) => {
+      if (submittedByMe.has(h)) {
+        const s = scoreByHand.get(h);
+        const star = (s?.stars || 0) > 0 ? "★".repeat(s.stars) : "";
+        return `*H${h}*: ${s?.raw_score ?? 0}${star}`;
+      }
+      if (dealtByMe.has(h)) return `*H${h}*: 🎴`;
+      return `*H${h}*: —`;
+    });
+    blks.push(section(`*Your hands*\n${statusLine.join("  ·  ")}`));
+    const unsubmittedDealt = allHands.filter((h) => dealtByMe.has(h) && !submittedByMe.has(h));
+    if (unsubmittedDealt.length > 0) {
+      // Slack actions blocks max out at 5 elements — split into chunks.
+      for (let i = 0; i < unsubmittedDealt.length; i += 5) {
+        const chunk = unsubmittedDealt.slice(i, i + 5);
+        blks.push(actions(chunk.map((h) =>
+          button(`Play Hand ${h}`, "qbim_open_hand_modal", `${game.game_id}|${h}`)
+        )));
+      }
+    } else {
+      blks.push(section("✅ All your hands are in. Waiting for others or for finalize."));
+    }
+  } else if (round && round.hand) {
     const mulliganNote = round.mulligans > 0
       ? ` (${round.mulligans} mulligan${round.mulligans > 1 ? "s" : ""} — max ${round.maxCards} cards)`
       : "";
+    // Digital deck: surface the dealt cards inline so Slack-only players can
+    // see their hand without flipping over to /play.
+    if (game.deck_type === "Digital" && round.dealtCards?.length) {
+      blks.push(section(`🎴 *Your hand:* ${round.dealtCards.join(" · ")}`));
+    }
     if (round.canSubmit) {
+      if (hasQuicklerTimer) {
+        blks.push(section(`🚨 ${quicklerTimerNote} — Submit now!`));
+      }
       const btns = [
         button(`Enter Hand ${round.hand} Score`, "qbim_open_hand_modal", `${game.game_id}|${round.hand}`),
-        button("Mulligan", "qbim_mulligan", `${game.game_id}|${round.hand}`),
       ];
+      // Mulligan drops 1 card; hide when we'd go below the 2-card word minimum.
+      if ((round.maxCards || 0) > 2) {
+        btns.push(button("Mulligan", "qbim_mulligan", `${game.game_id}|${round.hand}`));
+      }
       blks.push(
-        section(`Enter your score for *Hand ${round.hand}*${mulliganNote}`),
+        section(`✏️ Enter your score for *Hand ${round.hand}*${mulliganNote}`),
         actions(btns)
       );
     } else {
-      const mySubmission = round.myWords
-        ? `You submitted: *${round.myWords}* (${round.myScore} pts)${mulliganNote}`
-        : `Waiting for other players to finish *Hand ${round.hand}*...`;
-      blks.push(
-        section(mySubmission),
-        actions([button(`Edit Hand ${round.hand}`, "qbim_open_hand_modal", `${game.game_id}|${round.hand}`)])
-      );
+      const myLine = round.myWords
+        ? `✅ You submitted: *${round.myWords}* (${round.myScore} pts)${mulliganNote}`
+        : `⏳ Waiting for other players to finish *Hand ${round.hand}*...`;
+      blks.push(section(myLine));
+      if (hasQuicklerTimer) {
+        blks.push(context([quicklerTimerNote]));
+      }
+      if (missingNames && missingNames.length > 0) {
+        blks.push(context([`⏳ Waiting on: ${missingNames.join(", ")}`]));
+      }
+      blks.push(actions([button(`Edit Hand ${round.hand}`, "qbim_open_hand_modal", `${game.game_id}|${round.hand}`)]));
     }
   } else {
-    blks.push(section("All hands complete!"));
+    blks.push(section("✅ All hands complete!"));
   }
 
   // Scoreboard
   if (rawScores && rawScores.length) {
     blks.push(divider());
-    blks.push(section("*Scoreboard*"));
+    blks.push(header("📊 Scoreboard"));
     blks.push(...buildScoreboard(game.players, playerNames, rawScores, totals, viewerId, showOwnScore));
   }
 
@@ -156,14 +227,13 @@ function buildScoreboard(playerIds, playerNames, rawScores, totals, viewerId, sh
  */
 export function homeReview(game, playerNames, allScores, totals, viewerId, showOwnScore) {
   const blks = [
-    section(`*Game #${game.game_number}* — ${game.game_type} — *Review*`),
-    divider(),
-    section("All hands complete! Review the scores before finalizing."),
+    header(`🎮 Game #${game.game_number} — ${game.game_type}`),
+    context(["✅ All hands complete — review scores before finalizing"]),
     divider(),
   ];
 
   // Full scoreboard
-  blks.push(section("*Scoreboard*"));
+  blks.push(header("📊 Scoreboard"));
   blks.push(...buildScoreboard(game.players, playerNames, allScores, totals, viewerId, showOwnScore));
 
   // Finalize button
@@ -179,16 +249,16 @@ export function homeReview(game, playerNames, allScores, totals, viewerId, showO
  */
 export function homeComplete(game, totals, playerNames, rawScores) {
   const blks = [
-    section(`*Game #${game.game_number}* — ${game.game_type} — *Complete*`),
+    header(`🏆 Game #${game.game_number} — ${game.game_type} — Complete`),
     divider(),
-    section("*Final Leaderboard:*"),
+    header("📋 Final Leaderboard"),
     leaderboardTable(totals, playerNames, true),
   ];
 
   // Show full score table if rawScores provided
   if (rawScores && rawScores.length) {
     blks.push(divider());
-    blks.push(section("*Scoreboard*"));
+    blks.push(header("📊 Scoreboard"));
     // Show all totals since game is over — no hiding
     blks.push(...buildScoreboard(game.players, playerNames, rawScores, totals, null, false));
   }
@@ -217,7 +287,22 @@ export function startGameModal() {
           type: "static_select",
           action_id: "game_type",
           initial_option: option("QBIM", "QBIM"),
-          options: [option("QBIM", "QBIM"), option("Quickler", "Quickler")],
+          options: [option("QBIM", "QBIM"), option("Quickler", "Quickler"), option("Hot Swap", "HotSwap"), option("Qlander", "Qlander"), option("Gauntlet", "Gauntlet"), option("AutoQ", "AutoQ")],
+        },
+      },
+      {
+        type: "input",
+        block_id: "deck_block",
+        label: text("Deck"),
+        element: {
+          type: "static_select",
+          action_id: "deck",
+          initial_option: option("Physical", "physical-quiddler"),
+          options: [
+            option("Physical", "physical-quiddler"),
+            option("Digital", "digital-quiddler"),
+            option("Power", "power"),
+          ],
         },
       },
     ],
@@ -262,32 +347,165 @@ export function endGameModal(gameId) {
 }
 
 /**
- * Hand score entry modal.
+ * Hand score entry modal — unified for normal entry and dictionary-rejection state.
+ *
+ * `opts`:
+ *   - wordsInput:   prefill for the Words Played field
+ *   - testResult:   { valid, invalid } from a Test tap; rendered as a context line
+ *   - invalidWords: present when the prior submission was rejected; activates the
+ *                   warning banner, the "Resubmit" footer label, and the Vote button
+ *   - chosen:       resolved score option when rejection came from the score-choice modal
+ *
+ * The Vote button is always rendered at the bottom so its position never shifts.
+ * It is styled as `danger` and labeled "Vote to accept" only when there are pending
+ * invalid words; otherwise it is unstyled, labeled "Vote", and the handler treats
+ * it as a no-op.
  */
-export function handScoreModal(gameId, hand) {
+export function handScoreModal(gameId, hand, buttonPressedAt = null, opts = {}) {
+  const { wordsInput = "", testResult = null, invalidWords = null, chosen = null, bankOptions = null, dealtCards = null, bankedFromLastHand = null } = opts;
+  const inRejection = Array.isArray(invalidWords) && invalidWords.length > 0;
+
+  const wordsField = {
+    type: "plain_text_input",
+    action_id: "words",
+    placeholder: text("e.g. quiz or qu-i-z (leave blank if no words)"),
+  };
+  if (wordsInput) wordsField.initial_value = wordsInput;
+
+  const ctxJson = JSON.stringify({
+    game_id: gameId, hand, button_pressed_at: buttonPressedAt,
+    invalid_words: inRejection ? invalidWords : null,
+    chosen: inRejection ? chosen : null,
+    words: inRejection ? wordsInput : null,
+  });
+
+  const modalBlocks = [];
+
+  if (inRejection) {
+    const bad = invalidWords.map((w) => `*${w}*`).join(", ");
+    modalBlocks.push({
+      type: "section",
+      text: { type: "mrkdwn", text: `⚠️ Not in the dictionary: ${bad}` },
+    });
+  }
+
+  // Surface the player's dealt cards at the top of the modal when known
+  // (Digital deck games). Useful for Gauntlet — the home tab picker only
+  // shows the per-hand button, not the cards, so without this the player
+  // can't see what they have until they reach the modal.
+  if (Array.isArray(dealtCards) && dealtCards.length > 0) {
+    // Hot Swap: bold + 🪙 the card that was carried in from last hand's bank.
+    // Multiple copies of the same letter are possible (e.g. two N's) — only
+    // mark the first match so the visual is unambiguous.
+    let marked = false;
+    const formatted = dealtCards.map((c) => {
+      if (bankedFromLastHand && !marked && c === bankedFromLastHand) {
+        marked = true;
+        return `*${c}* 🪙`;
+      }
+      return c;
+    });
+    modalBlocks.push({
+      type: "section",
+      text: { type: "mrkdwn", text: `🎴 *Your hand:* ${formatted.join("  ·  ")}` },
+    });
+  }
+
+  modalBlocks.push({
+    type: "input",
+    block_id: "words_block",
+    label: text("Words Played"),
+    optional: true,
+    element: wordsField,
+  });
+
+  modalBlocks.push({
+    type: "context",
+    elements: [{
+      type: "mrkdwn",
+      text: inRejection
+        ? "Edit your words and tap *Resubmit*, or *Test* to dictionary-check without submitting."
+        : "Score is calculated automatically. Use hyphens to show individual cards (e.g. qu-i-z). Tap *Test* to dictionary-check without submitting.",
+    }],
+  });
+
+  modalBlocks.push({
+    type: "actions",
+    elements: [{
+      type: "button",
+      action_id: "qbim_check_words",
+      text: text("Test"),
+      value: ctxJson,
+    }],
+  });
+
+  if (testResult) {
+    const okLine = testResult.valid.length ? `✅ ${testResult.valid.map((v) => v.word).join(", ")}` : "";
+    const badLine = testResult.invalid.length ? `❌ ${testResult.invalid.map((v) => v.word).join(", ")}` : "";
+    const line = [okLine, badLine].filter(Boolean).join("    ") || "_(nothing to check)_";
+    modalBlocks.push({
+      type: "context",
+      elements: [{ type: "mrkdwn", text: line }],
+    });
+  }
+
+  // Hot Swap: optional dropdown to bank one of the dealt cards into the
+  // next hand. Rendered only when caller passes bankOptions (non-empty
+  // array of unique card labels — typically computed from the player's
+  // dealt cards for this hand). Leaving the field unset = "skip banking".
+  if (Array.isArray(bankOptions) && bankOptions.length > 0) {
+    modalBlocks.push({
+      type: "input",
+      block_id: "bank_block",
+      optional: true,
+      label: text("🪙 Bank a card for next hand (Hot Swap)"),
+      element: {
+        type: "static_select",
+        action_id: "bank_choice",
+        placeholder: text("Skip — don't bank a card"),
+        options: bankOptions.map((c) => ({ text: text(c), value: c })),
+      },
+    });
+  }
+
+  modalBlocks.push({ type: "divider" });
+
+  const voteBtn = {
+    type: "button",
+    action_id: "qbim_vote_word",
+    text: text(inRejection ? "🗳️ Vote to accept" : "🗳️ Vote"),
+    value: ctxJson,
+  };
+  if (inRejection) voteBtn.style = "danger";
+  modalBlocks.push({ type: "actions", elements: [voteBtn] });
+
   return {
     type: "modal",
     callback_id: "qbim_submit_score",
-    private_metadata: JSON.stringify({ game_id: gameId, hand }),
+    private_metadata: JSON.stringify({
+      game_id: gameId, hand, button_pressed_at: buttonPressedAt,
+      invalid_words: inRejection ? invalidWords : null,
+      chosen: inRejection ? chosen : null,
+    }),
     title: text(`Hand ${hand}`),
-    submit: text("Submit"),
+    submit: text(inRejection ? "Resubmit" : "Submit"),
+    blocks: modalBlocks,
+  };
+}
+
+/**
+ * Vote-in-progress modal — shown after Vote button is tapped.
+ */
+export function voteWaitingModal(hand, invalidWords) {
+  const bad = invalidWords.map((w) => `*${w}*`).join(", ");
+  return {
+    type: "modal",
+    title: text(`Hand ${hand}`),
+    close: text("OK"),
     blocks: [
       {
-        type: "input",
-        block_id: "words_block",
-        label: text("Words Played"),
-        optional: true,
-        element: {
-          type: "plain_text_input",
-          action_id: "words",
-          placeholder: text("e.g. quiz or qu-i-z (leave blank if no words)"),
-        },
-      },
-      {
-        type: "context",
-        elements: [
-          { type: "mrkdwn", text: "Score is calculated automatically from your cards. Use hyphens to show individual cards (e.g. qu-i-z) or just type the word." },
-        ],
+        type: "section",
+        text: { type: "mrkdwn", text: `🗳️ Vote started for ${bad}!\n\nOther players have 2 minutes to decide. You'll get a DM with the result.` },
       },
     ],
   };
@@ -297,7 +515,7 @@ export function handScoreModal(gameId, hand) {
  * Score choice modal — shown when multiple score interpretations exist.
  * E.g. "quiz" could be QU-I-Z (25 pts) or Q-U-I-Z (35 pts).
  */
-export function scoreChoiceModal(gameId, hand, words, options) {
+export function scoreChoiceModal(gameId, hand, words, options, buttonPressedAt = null, bankCard = null) {
   const radioOptions = options.map((opt) => ({
     text: { type: "mrkdwn", text: `*${opt.score} pts* — ${opt.breakdown} (${opt.cards} cards)` },
     value: JSON.stringify({ score: opt.score, cards: opt.cards, breakdown: opt.breakdown }),
@@ -306,7 +524,7 @@ export function scoreChoiceModal(gameId, hand, words, options) {
   return {
     type: "modal",
     callback_id: "qbim_confirm_score",
-    private_metadata: JSON.stringify({ game_id: gameId, hand, words }),
+    private_metadata: JSON.stringify({ game_id: gameId, hand, words, button_pressed_at: buttonPressedAt, bank_card: bankCard }),
     title: text(`Hand ${hand} — Pick Score`),
     submit: text("Confirm"),
     blocks: [
@@ -451,7 +669,7 @@ export function adminPickerModal(gameId, playerOptions, handOptions) {
   };
 }
 
-export function adminEditModal(gameId, playerId, playerName, hand, currentWords) {
+export function adminEditModal(gameId, playerId, playerName, hand, currentWords, currentMulligans) {
   return {
     type: "modal",
     callback_id: "qbim_admin_save_edit",
@@ -474,6 +692,21 @@ export function adminEditModal(gameId, playerId, playerName, hand, currentWords)
           placeholder: text("e.g. quiz or qu-i-z"),
         },
       },
+      {
+        type: "input",
+        block_id: "mulligans_block",
+        label: text("Mulligans"),
+        optional: true,
+        element: {
+          type: "number_input",
+          action_id: "mulligans",
+          is_decimal_allowed: false,
+          min_value: "0",
+          max_value: String(hand - 1),
+          initial_value: String(currentMulligans || 0),
+          placeholder: text("0"),
+        },
+      },
     ],
   };
 }
@@ -484,7 +717,7 @@ export function adminEditModal(gameId, playerId, playerName, hand, currentWords)
  * Build a player stats card from their DynamoDB player record.
  * Returns an array of Block Kit blocks.
  */
-export function playerCard(player) {
+export function playerCard(player, personalBests) {
   if (!player || !player.games_played) return [];
 
   const name = player.display_name || "Player";
@@ -503,29 +736,89 @@ export function playerCard(player) {
   const screwedOthers = player.times_screwed_others || 0;
   const bh = player.best_hand;
 
-  const lines = [
-    `*${name}'s Stats*`,
-    `*Record:* ${wins}W – ${losses}L (${typeof wpct === "number" ? wpct.toFixed(1) : wpct}%)  |  *Games:* ${gp}`,
-    `*Avg Total:* ${typeof avg === "number" ? avg.toFixed(1) : avg}  |  *Range:* ${low} – ${high}`,
-    `*Highest Hand:* ${highHand}  |  *Hands Won:* ${hw}`,
-    `*Stars:* ${stars} (${"★".repeat(Math.min(stars, 10))}${stars > 10 ? "…" : ""})  |  *Stars/Game:* ${typeof spg === "number" ? spg.toFixed(2) : spg}`,
-    `*Hand Screwed:* ${screwed}  |  *Screwed Others:* ${screwedOthers}  |  *Mulligans:* ${player.all_time_mulligans || 0}`,
-  ];
-
-  if (bh) {
-    lines.push(`*Best Hand:* Hand ${bh.hand} (${bh.wins} wins, avg ${bh.avg})`);
-  }
+  // Format personal bests as a compact line
+  const pb = personalBests || {};
+  const pbLine = [3, 4, 5, 6, 7, 8, 9, 10]
+    .map((h) => pb[h] || "·")
+    .join("  ");
 
   return [
     divider(),
-    section(lines.join("\n")),
+    header(`📋 ${name}'s Stats`),
+    section(`*${wins}W – ${losses}L* (${typeof wpct === "number" ? wpct.toFixed(1) : wpct}%)  •  ${gp} games`),
+    sectionWithFields([
+      `*Avg Total*\n${typeof avg === "number" ? avg.toFixed(1) : avg}`,
+      `*Range*\n${low} – ${high}`,
+      `*Highest Hand*\n${highHand}`,
+      `*Hands Won*\n${hw}`,
+      `*Stars*\n${stars} (${typeof spg === "number" ? spg.toFixed(2) : spg}/g)`,
+      `*Mulligans*\n${player.all_time_mulligans || 0}`,
+      `*😤 Screwed*\n${screwed}`,
+      `*😈 Villain*\n${screwedOthers}`,
+    ]),
+    ...(bh ? [context([`🎯 Best hand: H${bh.hand} (${bh.wins} wins, avg ${bh.avg})`])] : []),
+    context([`🏅 *Personal Best:*  ${pbLine}`]),
+    ...achievementLine(player),
+    ...(player.incomplete_games ? [context([`⚠️ ${player.incomplete_games} incomplete game${player.incomplete_games > 1 ? "s" : ""}`])] : []),
   ];
+}
+
+function achievementLine(player) {
+  const earned = player.achievements;
+  if (!earned || Object.keys(earned).length === 0) return [];
+  const badges = Object.keys(earned)
+    .filter((id) => ACHIEVEMENTS[id])
+    .map((id) => `${ACHIEVEMENTS[id].emoji} ${ACHIEVEMENTS[id].name}`)
+    .join("  ");
+  return badges ? [context([`*Achievements:*  ${badges}`])] : [];
+}
+
+// ── Admin Guest Join Modal ──────────────────────────────
+
+export function adminGuestJoinModal(gameId) {
+  return {
+    type: "modal",
+    callback_id: "qbim_admin_guest_join_submit",
+    private_metadata: JSON.stringify({ game_id: gameId }),
+    title: text("Join as Guest"),
+    submit: text("Join"),
+    blocks: [
+      {
+        type: "input",
+        block_id: "guest_name_block",
+        label: text("Guest Name"),
+        element: {
+          type: "plain_text_input",
+          action_id: "guest_name",
+          placeholder: text("e.g. Mom, Uncle Bob"),
+        },
+      },
+    ],
+  };
 }
 
 // ── Primitives ─────────────────────────────────────────
 
+function header(txt) {
+  return { type: "header", text: { type: "plain_text", text: txt, emoji: true } };
+}
+
 function section(txt) {
   return { type: "section", text: { type: "mrkdwn", text: txt } };
+}
+
+function sectionWithFields(fieldPairs) {
+  return {
+    type: "section",
+    fields: fieldPairs.map((f) => ({ type: "mrkdwn", text: f })),
+  };
+}
+
+function context(texts) {
+  return {
+    type: "context",
+    elements: texts.map((t) => ({ type: "mrkdwn", text: t })),
+  };
 }
 
 function divider() {

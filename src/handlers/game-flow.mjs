@@ -1,9 +1,13 @@
 import crypto from "node:crypto";
 import { verifySlackSignature, parseSlackBody } from "../lib/verify.mjs";
-import { slack, CHANNEL, dmUser, dmAllPlayers } from "../lib/slack.mjs";
+import { slack, dmUser, dmAllPlayers } from "../lib/slack.mjs";
 import * as db from "../lib/db.mjs";
 import * as blocks from "../lib/blocks.mjs";
 import { renderHome, resolveNames, aggregateScores } from "../lib/home.mjs";
+import { deleteQuicklerTimer } from "../lib/quickler.mjs";
+import { dealFromPool, getDeckSize } from "../lib/autoq-deck.mjs";
+import { getDeckVariant } from "../lib/cards.mjs";
+import { getHandRange, dealSizeForHand } from "../lib/cards.mjs";
 
 export async function handler(event) {
   const { raw, parsed } = parseSlackBody(event.body, event.isBase64Encoded);
@@ -18,12 +22,12 @@ export async function handler(event) {
     return respond(401, { error: "Invalid signature" });
   }
 
-  console.log("game-flow parsed.type:", parsed.type);
+  if (process.env.DEBUG_ROUTING) console.log("game-flow parsed.type:", parsed.type);
 
   try {
     // Events API (app_home_opened)
     if (parsed.type === "event_callback") {
-      console.log("event_callback event.type:", parsed.event?.type);
+      if (process.env.DEBUG_ROUTING) console.log("event_callback event.type:", parsed.event?.type);
       await handleEvent(parsed.event);
       return respond(200);
     }
@@ -95,11 +99,33 @@ async function handleAction(payload) {
     case "qbim_mulligan": {
       const [gameId, handStr] = action.value.split("|");
       const hand = Number(handStr);
-      // Ensure mulligan doesn't reduce below 1 card
-      const current = await db.getMulliganCount(gameId, userId, hand);
-      if (current < hand - 1) {
-        await db.initMulligansMap(gameId);
-        await db.addMulligan(gameId, userId, hand);
+      const g = await db.getGame(gameId);
+      // Digital pool check BEFORE recording the mulligan — if the deck is
+      // too depleted to deal the new (smaller) hand, reject and don't count
+      // the mulligan against the player.
+      const gVariant = getDeckVariant(g);
+      const mulliganKey = `${userId}#${hand}`;
+      const mPrior = g?.mulligans?.[mulliganKey] || 0;
+      if (g.deck_type === "Digital") {
+        const target = dealSizeForHand(g.game_type, hand, mPrior + 1);
+        const seen = g.hand_seen_cards?.[mulliganKey] || [];
+        const poolRemaining = getDeckSize(gVariant) - seen.length;
+        if (poolRemaining < target) {
+          await renderHome(userId);
+          break; // silent reject — UI re-renders with the button disabled
+        }
+      }
+      // Atomic debounce + cap check. Ignores duplicate clicks (Slack retries,
+      // impatient double-taps) within the debounce window.
+      const ok = await db.tryAddMulligan(gameId, userId, hand, dealSizeForHand(g.game_type, hand, 0) - 2);
+      if (ok && g.deck_type === "Digital") {
+        // tryAddMulligan incremented mulligans by 1; derive locally rather
+        // than refetch the row.
+        const m = mPrior + 1;
+        const seen = g.hand_seen_cards?.[mulliganKey] || [];
+        const dealSize = dealSizeForHand(g.game_type, hand, m);
+        const { cards } = dealFromPool(seen, dealSize, gVariant);
+        await db.recordDeal(gameId, userId, hand, cards);
       }
       await renderHome(userId);
       break;
@@ -115,8 +141,42 @@ async function handleViewSubmission(payload) {
     const gameType =
       payload.view.state.values.game_type_block.game_type.selected_option.value;
 
-    const game = await createNewGame(userId, gameType);
+    // Parse the deck choice. Three options encode (deckType, deckVariant):
+    //   physical-quiddler → Physical / Quiddler  (default; pre-existing behaviour)
+    //   digital-quiddler  → Digital / Quiddler
+    //   power             → Digital / Power      (Power always implies Digital)
+    const deckChoice = payload.view.state.values.deck_block?.deck?.selected_option?.value || "physical-quiddler";
+    let deckType = "Physical";
+    let deckVariant = "Quiddler";
+    if (deckChoice === "digital-quiddler") { deckType = "Digital"; }
+    else if (deckChoice === "power") { deckType = "Digital"; deckVariant = "Power"; }
+
+    // AutoQ: open the opponent-count modal instead of creating a regular game.
+    // Pass the deck variant through via the AutoQ modal's private_metadata.
+    if (gameType === "AutoQ") {
+      const { autoqStartModal } = await import("../lib/autoq-blocks.mjs");
+      return respond(200, {
+        response_action: "update",
+        view: autoqStartModal({ deckVariant }),
+      });
+    }
+
+    // Reject if the user already has an OPEN or ACTIVE game
+    const existing = await findActiveGameForUser(userId);
+    if (existing) {
+      return respond(200, {
+        response_action: "errors",
+        errors: {
+          game_type_block: `You already have an active game (#${existing.game_number}). Finish or end it first.`,
+        },
+      });
+    }
+
+    const game = await createNewGame(userId, gameType, deckType, deckVariant);
     await postLobbyMessage(game);
+
+    // Notify regular players (>5 games) about the new game
+    await notifyRegulars(game);
 
     // Refresh home tab after modal closes
     await renderHome(userId);
@@ -133,10 +193,26 @@ async function handleViewSubmission(payload) {
     if (choice === "stay") {
       // Do nothing, just close the modal
     } else if (choice === "drop") {
+      // Clean up Quickler timer if the dropping player triggers it
+      const gameBeforeDrop = await db.getGame(game_id);
+      if (gameBeforeDrop.quickler_timer_schedule_name) {
+        // Check if dropping makes the hand complete (handled below) — clean up timer
+        const dropScores = await db.getScoresForGameHand(game_id, gameBeforeDrop.quickler_timer_hand);
+        const dropStartHands = gameBeforeDrop.player_start_hands || {};
+        const dropEligible = gameBeforeDrop.players.filter((pid) => pid !== userId && (dropStartHands[pid] || 3) <= gameBeforeDrop.quickler_timer_hand);
+        const dropSubmitted = dropScores.filter((s) => s.player_slack_id !== userId);
+        if (dropSubmitted.length >= dropEligible.length) {
+          try { await deleteQuicklerTimer(gameBeforeDrop.quickler_timer_schedule_name); } catch (err) { console.warn("Timer cleanup:", err.message); }
+          await db.updateGameAttr(game_id, { quickler_timer_started_at: null, quickler_timer_hand: null, quickler_timer_schedule_name: null });
+        }
+      }
       await db.removePlayerFromGame(game_id, userId);
       const game = await db.getGame(game_id);
       // If no players left, finish the game
       if (!game.players || game.players.length === 0) {
+        if (game.quickler_timer_schedule_name) {
+          try { await deleteQuicklerTimer(game.quickler_timer_schedule_name); } catch (err) { console.warn("Timer cleanup:", err.message); }
+        }
         await db.updateGameStatus(game_id, "COMPLETE", { completed_at: new Date().toISOString() });
       } else {
         // Check if any hand is now complete with fewer players
@@ -154,6 +230,11 @@ async function handleViewSubmission(payload) {
         }
       }
     } else if (choice === "finish") {
+      // Clean up any pending Quickler timer
+      const gameBeforeEnd = await db.getGame(game_id);
+      if (gameBeforeEnd.quickler_timer_schedule_name) {
+        try { await deleteQuicklerTimer(gameBeforeEnd.quickler_timer_schedule_name); } catch (err) { console.warn("Timer cleanup:", err.message); }
+      }
       await db.updateGameStatus(game_id, "COMPLETE", { completed_at: new Date().toISOString() });
       const game = await db.getGame(game_id);
       const scores = await db.getScoresForGame(game_id);
@@ -172,34 +253,106 @@ async function handleViewSubmission(payload) {
 
 // ── Core Logic ─────────────────────────────────────────
 
+export async function findActiveGameForUser(userId) {
+  const today = todayStr();
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const todayGames = await db.getGamesByDate(today);
+  const yesterdayGames = await db.getGamesByDate(yesterday);
+  const allGames = [...todayGames, ...yesterdayGames];
+  return allGames.find(
+    (g) => (g.status === "OPEN" || g.status === "ACTIVE") && g.players.includes(userId)
+  ) || null;
+}
+
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
 
-async function createNewGame(hostSlackId, gameType) {
+export async function createNewGame(hostSlackId, gameType, deckType = "Physical", deckVariant = "Quiddler") {
   const today = todayStr();
-  const existing = await db.getGamesByDate(today);
-  const gameNumber = existing.length + 1;
+  const maxGameNumber = await db.getMaxGameNumber();
+  const gameNumber = maxGameNumber + 1;
 
+  // Qlander + Gauntlet enforce Digital deck (singleton-rule enforcement
+  // and pre-dealt 8-hand grid respectively both require server-side
+  // tracking). Force the deck type accordingly.
+  const finalDeckType = (gameType === "Qlander" || gameType === "Gauntlet") ? "Digital" : deckType;
+
+  // Power deck requires Digital play for now (no physical Power cards exist).
+  // Silently fall back to Quiddler if Physical is selected with Power — UI
+  // should prevent this, but enforce server-side too.
+  const finalDeckVariant = (deckVariant === "Power" && finalDeckType !== "Digital") ? "Quiddler" : deckVariant;
+
+  const firstHand = getHandRange(gameType)[0];
+  const initialDealSize = dealSizeForHand(gameType, firstHand, 0);
+  const initialDeal = finalDeckType === "Digital" ? dealFromPool([], initialDealSize, finalDeckVariant).cards : null;
+
+  // Gauntlet: deal all 8 hands face-down at game start. Each hand is a
+  // fresh shuffle of the full deck (independent shuffles per hand, same
+  // as QBIM's per-hand reshuffle). Player picks any order in the 4x2 grid
+  // UI; selection happens client-side.
+  const gauntletDealtCards = {};
+  const gauntletHandSeen = {};
+  if (gameType === "Gauntlet" && finalDeckType === "Digital") {
+    for (let h = 3; h <= 10; h++) {
+      const dealSize = dealSizeForHand(gameType, h, 0);
+      const { cards } = dealFromPool([], dealSize, finalDeckVariant);
+      gauntletDealtCards[`${hostSlackId}#${h}`] = cards;
+      gauntletHandSeen[`${hostSlackId}#${h}`] = [...cards];
+    }
+  }
+
+  // Qlander: seed the host's personal blocklist. Prefer the player's
+  // persisted list (maintained at finalizeGame time — zero scan cost).
+  // Fall back to a fresh compute if missing, and persist it so next time
+  // the read is free.
+  let qlanderBlocklist = null;
+  if (gameType === "Qlander") {
+    let words = await db.getPlayerQlanderBlocklist(hostSlackId);
+    if (!words) {
+      const set = await db.computeQlanderBlocklist(hostSlackId, 20);
+      words = [...set];
+      try { await db.setPlayerQlanderBlocklist(hostSlackId, words); } catch { /* ignore cache write failure */ }
+    }
+    qlanderBlocklist = { [hostSlackId]: words };
+  }
+
+  const usingGauntletDeals = gameType === "Gauntlet" && Object.keys(gauntletDealtCards).length > 0;
   const game = {
     game_id: crypto.randomUUID(),
     game_date: today,
     status: "OPEN",
     game_type: gameType,
+    deck_type: finalDeckType,
+    deck_variant: finalDeckVariant,
     game_number: gameNumber,
     host_slack_id: hostSlackId,
     players: [hostSlackId],
-    player_start_hands: { [hostSlackId]: 3 },
+    player_start_hands: { [hostSlackId]: firstHand },
     mulligans: {},
     dealers: [],
+    dealt_cards: usingGauntletDeals
+      ? gauntletDealtCards
+      : (initialDeal ? { [`${hostSlackId}#${firstHand}`]: initialDeal } : {}),
+    hand_seen_cards: usingGauntletDeals
+      ? gauntletHandSeen
+      : (initialDeal ? { [`${hostSlackId}#${firstHand}`]: initialDeal } : {}),
     created_at: new Date().toISOString(),
+    ...(qlanderBlocklist ? { qlander_blocklist: qlanderBlocklist } : {}),
   };
 
   await db.createGame(game);
 
-  // Upsert host in Players table
-  const info = await slack().users.info({ user: hostSlackId });
-  await db.upsertPlayer(hostSlackId, info.user.profile.display_name || info.user.real_name);
+  // Upsert host in Players table — Slack info call is best-effort (a host who
+  // started the game from /play may not have a Slack profile lookup available
+  // through this code path's bot token, but their record is already populated
+  // via the OAuth callback).
+  try {
+    const info = await slack().users.info({ user: hostSlackId });
+    await db.upsertPlayer(hostSlackId, info.user.profile.display_name || info.user.real_name);
+  } catch (err) {
+    console.warn("upsertPlayer from createNewGame skipped:", err.message);
+  }
 
   return game;
 }
@@ -230,6 +383,40 @@ async function joinGame(gameId, slackId) {
   await db.addPlayerToGame(gameId, slackId);
   await db.setPlayerStartHand(gameId, slackId, startHand);
 
+  // Digital deck: deal the joiner cards for whichever hand they're starting
+  // at (fresh deck — per-hand seen set, so no prior history applies).
+  // Gauntlet: deal ALL remaining hands (startHand..10) up front so the
+  // joiner sees the same 4x2 grid as the host.
+  if (game.deck_type === "Digital") {
+    const variant = getDeckVariant(game);
+    if (game.game_type === "Gauntlet") {
+      for (let h = startHand; h <= 10; h++) {
+        const dealSize = dealSizeForHand(game.game_type, h, 0);
+        const { cards } = dealFromPool([], dealSize, variant);
+        await db.recordDeal(gameId, slackId, h, cards);
+      }
+    } else {
+      const dealSize = dealSizeForHand(game.game_type, startHand, 0);
+      const { cards } = dealFromPool([], dealSize, variant);
+      await db.recordDeal(gameId, slackId, startHand, cards);
+    }
+  }
+
+  // Qlander: seed the joiner's blocklist before they can submit. Prefer
+  // the persisted player-record list; fall back to compute-and-cache.
+  if (game.game_type === "Qlander") {
+    let words = await db.getPlayerQlanderBlocklist(slackId);
+    if (!words) {
+      const set = await db.computeQlanderBlocklist(slackId, 20);
+      words = [...set];
+      try { await db.setPlayerQlanderBlocklist(slackId, words); } catch { /* ignore */ }
+    }
+    const existing = game.qlander_blocklist || {};
+    await db.updateGameAttr(gameId, {
+      qlander_blocklist: { ...existing, [slackId]: words },
+    });
+  }
+
   const info = await slack().users.info({ user: slackId });
   await db.upsertPlayer(slackId, info.user.profile.display_name || info.user.real_name);
 }
@@ -241,7 +428,24 @@ async function openStartGameModal(triggerId) {
   });
 }
 
-async function postLobbyMessage(game) {
+export async function notifyRegulars(game) {
+  try {
+    const regulars = await db.getRegularPlayers(5);
+    const names = await resolveNames(game.players);
+    const hostName = names.get(game.host_slack_id) || game.host_slack_id;
+    for (const player of regulars) {
+      // Skip the host — they already got a DM from postLobbyMessage
+      if (player.slack_id === game.host_slack_id) continue;
+      await dmUser(player.slack_id, {
+        text: `${hostName} started a QBIM game! Open QBot to join.`,
+      });
+    }
+  } catch (err) {
+    console.warn("Failed to notify regulars:", err.message);
+  }
+}
+
+export async function postLobbyMessage(game) {
   const names = await resolveNames(game.players);
   const hostName = [...names.values()][0];
   const text = `${hostName} started a ${game.game_type} game! Open the QBot Home tab to join.`;
