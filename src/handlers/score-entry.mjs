@@ -433,9 +433,11 @@ async function confirmScore(payload) {
   let chosen;
   try { chosen = JSON.parse(selectedValue); } catch { return respond(200); }
 
-  // Qlander singleton rule — same check as submitScore. Run before the
-  // dictionary round-trip; surfaces inline in the modal.
-  const repeats = await checkQlanderRepeats(userId, game_id, hand, words);
+  // Qlander singleton rule — same check as submitScore. Fetch the game
+  // record once and pass it to the helper so it doesn't do another
+  // round-trip just to read game_type / qlander_blocklist.
+  const gameForConfirm = await db.getGame(game_id);
+  const repeats = await checkQlanderRepeats(userId, game_id, hand, words, gameForConfirm);
   if (repeats) {
     return validationError(`Qlander: you've already played ${repeats.join(", ")} (last 20 games or earlier this game).`);
   }

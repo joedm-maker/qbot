@@ -40,25 +40,24 @@ export async function handler(event) {
 
   console.log(`Auto-zeroing ${toZero.length} (player, hand) pairs`);
 
-  for (const { pid, hand } of toZero) {
-    await db.putScore({
-      game_id,
-      player_hand_key: `${pid}#${hand}`,
-      player_slack_id: pid,
-      hand,
-      raw_score: 0,
-      words: "",
-      word_count: 0,
-      longest_word_letters: 0,
-      mulligans: 0,
-      breakdown: "—",
-      stars: 0,
-      star_longest_word: false,
-      star_most_words: false,
-      submitted_at: new Date().toISOString(),
-      gauntlet_timed_out: true,
-    });
-  }
+  const nowIso = new Date().toISOString();
+  await Promise.all(toZero.map(({ pid, hand }) => db.putScore({
+    game_id,
+    player_hand_key: `${pid}#${hand}`,
+    player_slack_id: pid,
+    hand,
+    raw_score: 0,
+    words: "",
+    word_count: 0,
+    longest_word_letters: 0,
+    mulligans: 0,
+    breakdown: "—",
+    stars: 0,
+    star_longest_word: false,
+    star_most_words: false,
+    submitted_at: nowIso,
+    gauntlet_timed_out: true,
+  })));
 
   // Clear the race timer marker and trigger finalize. finalizeGame for
   // Gauntlet loops H3-H10 awarding stars before posting the leaderboard,
