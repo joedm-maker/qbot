@@ -5,3 +5,4 @@ samconfig.toml
 packaged.yaml
 analysis/data/
 .claude/
+AUTOQ_RULES.md
