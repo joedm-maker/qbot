@@ -395,10 +395,15 @@ async function submitScore(userId, event) {
     });
   }
 
-  // Multiple readings: digraphs are never worth more than the corresponding
-  // individual letters, so options[0] (sorted by score desc) is always the
-  // score-optimal pick. The player can force a specific digraph via hyphen
-  // syntax (e.g. "qu-i-z") which collapses options to a single reading.
+  // Multiple readings on score-affecting digraphs (QU/TH/CL/CH/CK) — the
+  // player has to disambiguate, because the highest-scoring option assumes
+  // they used individual letters even when they physically held the digraph
+  // card. Mirrors the Slack score-choice modal. IN/ER are already collapsed
+  // by getScoreOptions (same score → one option), so only the truly
+  // ambiguous cases trigger the picker.
+  if (!chosen && options.length > 1) {
+    return jsonResp(200, { status: "choice_required", options });
+  }
   const chosenOption = chosen || options[0];
   await invokeScoreWorker({
     mode: "regular", userId, game_id, hand, wordsInput,
