@@ -1,3 +1,10 @@
+## v0.2.8 — 2026-06-12
+
+### Changed
+- **Web `/scores` no longer auto-picks digraph readings.** When a submission has multiple score-affecting interpretations (QU/TH/CL/CH/CK), the endpoint returns `{ status: "choice_required", options }` and the dashboard's `ChoicePicker` prompts the player — matching the Slack score-choice modal. Prior auto-pick assumed individual letters, which mis-scored hands where the player physically held the digraph card. Same-score digraphs (IN/ER) remain pre-collapsed by `getScoreOptions`.
+
+---
+
 ## v0.2.7 — 2026-05-20
 
 ### Added
