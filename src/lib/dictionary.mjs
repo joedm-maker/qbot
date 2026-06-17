@@ -17,6 +17,16 @@ import * as db from "./db.mjs";
 const MW_KEY = process.env.MW_API_KEY;
 const MW_BASE = "https://www.dictionaryapi.com/api/v3/references/collegiate/json";
 
+/**
+ * House blacklist — words MW lists but that violate our rules (contractions,
+ * prefixes, abbreviations, chemical symbols, etc.) and slip past entryRejected
+ * because they appear as stems or unmarked entries. Checked before cache/MW
+ * so a previously-cached "valid" entry can't bypass them.
+ *   ve — contraction (I've, we've)
+ *   dy — prefix, abbreviation, and chemical symbol (dysprosium)
+ */
+const BLACKLIST = new Set(["ve", "dy"]);
+
 /** Clean a submitted word to what we actually check against the dictionary. */
 export function cleanWord(raw) {
   return String(raw || "").toLowerCase().replace(/[^a-z]/g, "");
@@ -103,6 +113,9 @@ async function callMW(word) {
 export async function lookupWord(raw) {
   const word = cleanWord(raw);
   if (!word) return { valid: false };
+
+  // House blacklist short-circuits cache + MW (overrides any stale "valid" cache entry)
+  if (BLACKLIST.has(word)) return { valid: false, source: "blacklist" };
 
   // 1. Check cache
   const cached = await db.getDictionaryWord(word);
