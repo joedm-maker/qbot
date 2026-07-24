@@ -345,6 +345,30 @@ async function submitScore(userId, event) {
     return jsonResp(403, { error: "Join the game before submitting" });
   }
 
+  // Preflight the same guards saveScore enforces in the async worker.
+  // saveScore's validationError returns are swallowed by the fire-and-forget
+  // worker path — without these mirrors, the client sees a false "submitted"
+  // (with an optimistic panel and everything) while the write silently drops.
+  const existingScores = await db.getScoresForGameHand(game_id, hand);
+  const isEdit = existingScores.some((s) => s.player_slack_id === userId);
+  const startHands = game.player_start_hands || {};
+  const eligiblePlayers = game.players.filter((pid) => (startHands[pid] || 3) <= hand);
+  if (isEdit) {
+    if (game.game_type === "Gauntlet") {
+      return jsonResp(409, { error: "Gauntlet: submitted hands are locked." });
+    }
+    if (existingScores.length >= eligiblePlayers.length) {
+      return jsonResp(409, { error: "That hand is already complete — wait for the next hand to deal." });
+    }
+  }
+  if (game.game_type === "Quickler" && game.quickler_timer_started_at && game.quickler_timer_hand === hand && !isEdit) {
+    const timerStart = new Date(game.quickler_timer_started_at).getTime() / 1000;
+    const pressedAt = button_pressed_at ? Number(button_pressed_at) : Date.now() / 1000;
+    if (pressedAt - timerStart > 30) {
+      return jsonResp(409, { error: "Time's up — the 30-second Quickler timer expired." });
+    }
+  }
+
   const wordsInput = (words || "").trim();
 
   // Empty submission = 0 points (matches Slack behavior; deliberate blank rule).
