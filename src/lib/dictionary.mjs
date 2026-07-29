@@ -24,8 +24,10 @@ const MW_BASE = "https://www.dictionaryapi.com/api/v3/references/collegiate/json
  * so a previously-cached "valid" entry can't bypass them.
  *   ve — contraction (I've, we've)
  *   dy — prefix, abbreviation, and chemical symbol (dysprosium)
+ *   vs — abbreviation (versus)
+ *   ws — letter plural (plural of "w"), not a standalone word
  */
-const BLACKLIST = new Set(["ve", "dy"]);
+const BLACKLIST = new Set(["ve", "dy", "vs", "ws"]);
 
 /** Clean a submitted word to what we actually check against the dictionary. */
 export function cleanWord(raw) {
