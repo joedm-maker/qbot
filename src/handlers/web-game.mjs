@@ -384,7 +384,10 @@ async function submitScore(userId, event) {
   }
 
   const mulligans = game?.mulligans?.[`${userId}#${hand}`] || 0;
-  const maxCards = dealSizeForHand(game.game_type, hand, mulligans);
+  // Max scorable cards = hand number minus mulligans (standard Quiddler rule);
+  // dealSizeForHand (hand+3) is the Digital *deal* size, not the scoring cap.
+  // Digital games still deal hand+3 — the extra 3 are non-scorable discards.
+  const maxCards = Math.max(2, hand - mulligans);
 
   // Digital games filter options to those actually formable from the player's
   // dealt cards; Physical games fall back to the cards-count check.

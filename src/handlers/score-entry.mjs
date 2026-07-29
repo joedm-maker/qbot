@@ -355,7 +355,11 @@ async function submitScore(payload) {
   // calls getGame).
   const gameForMax = await db.getGame(game_id);
   const mulligans = gameForMax?.mulligans?.[`${userId}#${hand}`] || 0;
-  const maxCards = dealSizeForHand(gameForMax?.game_type, hand, mulligans);
+  // Max scorable cards is the hand number (minus mulligans) — the standard
+  // Quiddler rule. NOT dealSizeForHand (hand+3): that's how many cards a
+  // Digital game *deals*; the extra 3 are discards you can't score with.
+  // Matches AutoQ's cap in autoq.mjs.
+  const maxCards = Math.max(2, hand - mulligans);
   const deckVariant = getDeckVariant(gameForMax);
 
   // Get all possible score options with adjusted card limit
@@ -1021,7 +1025,8 @@ async function adminSaveEdit(payload) {
 
   // Calculate score from words (accounting for mulligans)
   const gameForMax2 = await db.getGame(game_id);
-  const maxCards = dealSizeForHand(gameForMax2?.game_type, hand, newMulligans);
+  // Max scorable cards = hand number minus mulligans (see submitScore).
+  const maxCards = Math.max(2, hand - newMulligans);
   const { options, invalid, tooShort } = getScoreOptions(wordsInput, maxCards, getDeckVariant(gameForMax2));
   if (invalid.length) {
     return validationError(`Invalid cards: ${invalid.join(", ")}`);
