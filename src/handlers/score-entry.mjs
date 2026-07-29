@@ -2,7 +2,7 @@ import { verifySlackSignature, parseSlackBody } from "../lib/verify.mjs";
 import { slack, dmAllPlayers, dmUser } from "../lib/slack.mjs";
 import * as db from "../lib/db.mjs";
 import * as blocks from "../lib/blocks.mjs";
-import { getScoreOptions, getHandRange, formatWordsWithPoints, normalizeWords, dealSizeForHand, CARD_VALUES, getDeck, getDeckVariant } from "../lib/cards.mjs";
+import { getScoreOptions, getHandRange, formatWordsWithPoints, normalizeWords, dealSizeForHand, getDeck, getDeckVariant } from "../lib/cards.mjs";
 import { renderHome, resolveNames, aggregateScores, findCurrentRound, ADMIN_USER } from "../lib/home.mjs";
 import { createQuicklerTimer, deleteQuicklerTimer } from "../lib/quickler.mjs";
 import { validateWords } from "../lib/dictionary.mjs";
@@ -355,10 +355,10 @@ async function submitScore(payload) {
   // calls getGame).
   const gameForMax = await db.getGame(game_id);
   const mulligans = gameForMax?.mulligans?.[`${userId}#${hand}`] || 0;
-  // Max scorable cards is the hand number (minus mulligans) — the standard
-  // Quiddler rule. NOT dealSizeForHand (hand+3): that's how many cards a
-  // Digital game *deals*; the extra 3 are discards you can't score with.
-  // Matches AutoQ's cap in autoq.mjs.
+  // Cap on *scorable* cards. Every hand deals hand+3 (all game types), and you
+  // always keep at least 3 as discards, so the most you can score with is
+  // hand - mulligans (each mulligan re-deals one fewer card). dealSizeForHand
+  // gives the deal size (hand+3); this is the scoring cap. Matches AutoQ (autoq.mjs).
   const maxCards = Math.max(2, hand - mulligans);
   const deckVariant = getDeckVariant(gameForMax);
 

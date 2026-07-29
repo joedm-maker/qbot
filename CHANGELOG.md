@@ -1,3 +1,10 @@
+## v0.2.9 — 2026-07-29
+
+### Fixed
+- **Word-length cap now uses the scorable limit, not the deal size.** The QBIM/Quickler scorers (`score-entry.mjs` submit + admin edit, `web-game.mjs` `/scores`) capped words at `dealSizeForHand` = `hand + 3 - mulligans` — but that's the *deal* size. Every hand deals `hand + 3` and you always keep at least 3 as discards, so the most you can score with is `hand - mulligans`. The scorers now use `Math.max(2, hand - mulligans)`, matching AutoQ. Over-length words are rejected, and the digraph picker only prompts when 2+ readings actually fit the hand (over-length splits are dropped). `dealSizeForHand` is unchanged and still governs dealing (`hand + 3`, including the Digital games).
+
+---
+
 ## v0.2.8 — 2026-06-12
 
 ### Changed

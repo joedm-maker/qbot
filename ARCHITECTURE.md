@@ -104,7 +104,7 @@ All state is in DynamoDB. No in-memory state between Lambda invocations. The Sla
 9. `qbim_admin_*` actions → `score-entry.mjs`
 
 ### Digital deck
-All game types (QBIM, Quickler, Hot Swap, Qlander, Gauntlet, AutoQ) deal `hand + 3` cards per round (6 for Hand 3, 7 for Hand 4, etc.) — standard Quiddler rule. The extra 3 are the "discards" players don't have to score with. The single source of truth is `cards.dealSizeForHand(gameType, hand, mulligans)`. Hot Swap, Qlander, and Gauntlet build on QBIM's basic rules with bank-a-discard, word-singleton, and pre-dealt-grid mechanics respectively.
+All game types (QBIM, Quickler, Hot Swap, Qlander, Gauntlet, AutoQ) deal `hand + 3` cards per round (6 for Hand 3, 7 for Hand 4, etc.) — standard Quiddler rule. You always keep at least 3 of them as discards, so the **most you can score with is `hand - mulligans`** cards — the deal size and the scoring cap are distinct numbers. The scoring cap (`Math.max(2, hand - mulligans)`) is enforced at the `maxCards` call sites in `score-entry.mjs`, `web-game.mjs`, and `autoq.mjs`; the single source of truth for the *deal* is `cards.dealSizeForHand(gameType, hand, mulligans)`. Hot Swap, Qlander, and Gauntlet build on QBIM's basic rules with bank-a-discard, word-singleton, and pre-dealt-grid mechanics respectively.
 
 Games opt into in-app dealing via `game.deck_type = "Digital"` (default: `"Physical"`, scores only). Digital games persist:
 - `game.dealt_cards[playerId#hand]` — what the player currently holds
