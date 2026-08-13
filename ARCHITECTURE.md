@@ -11,14 +11,17 @@ QBIM Bot is a Slack bot for tracking lunchtime Quiddler card game scores at Desi
 
 ### Runtime
 - **Node.js 22.x** (ESM modules — all files use `.mjs` extension)
-- **AWS Lambda** (single function, 10s timeout, 256MB)
+- **AWS Lambda** (5 functions: main router `qbim-bot` + async `qbim-score-worker` + 3 EventBridge-scheduled timers `qbim-quickler-timer` / `qbim-gauntlet-timer` / `qbim-vote-timer`; router is 10s / 256MB, timers/worker 15–30s)
 - **AWS API Gateway** (REST API, stage: `prod`)
-- **AWS DynamoDB** (3 tables, PAY_PER_REQUEST billing)
+- **AWS DynamoDB** (6 tables, PAY_PER_REQUEST billing)
 
 ### Dependencies (package.json)
 - `@aws-sdk/client-dynamodb` ^3.700.0 — DynamoDB client
 - `@aws-sdk/lib-dynamodb` ^3.700.0 — DynamoDB Document client (higher-level API)
+- `@aws-sdk/client-scheduler` ^3.700.0 — EventBridge Scheduler client (Quickler/Gauntlet/vote timers)
 - `@slack/web-api` ^7.8.0 — Slack API client
+
+> `@aws-sdk/client-lambda` is not a declared dependency — it's dynamically `import()`ed from the AWS Lambda runtime's bundled SDK to fire-and-forget the score-worker.
 
 ### Dev Dependencies
 - `@aws-sdk/client-secrets-manager` ^3.700.0 (unused, from initial setup)
@@ -50,11 +53,14 @@ qbim-bot/
     │   ├── router.mjs           # Lambda entry point — routes by httpMethod, action_id, callback_id
     │   ├── game-flow.mjs        # Start/join/end game, mulligan, score toggle, app_home_opened
     │   ├── score-entry.mjs      # Score submission, auto stars, admin edits, game finalization
-    │   ├── stats-api.mjs        # Read-only GET endpoints for dashboard (/stats/players,games,scores,live)
+    │   ├── autoq.mjs            # AutoQ solo mode — create/deal/score/finish + saveAutoQScore (called by score-worker)
+    │   ├── stats-api.mjs        # Read-only GET endpoints for dashboard (/stats/players,games,scores,autoq-scores,live,validatewords,dictionary)
     │   ├── auth.mjs             # Slack OpenID Connect sign-in for the web app (/auth/slack/login, /callback, /me)
     │   ├── web-game.mjs         # Web-app game endpoints (/games/me|create|join|mulligan|drop|finish, /scores, /votes/start) — Bearer JWT auth
-    │   ├── score-worker.mjs     # Async Lambda for save + Slack fanout (fire-and-forget from Slack and web)
-    │   └── quickler-timer.mjs   # EventBridge-scheduled handler that auto-zeros missing Quickler submitters at 30s
+    │   ├── score-worker.mjs     # Async Lambda: MW word validation + save + Slack fanout (fire-and-forget from Slack, web, and vote resolve)
+    │   ├── quickler-timer.mjs   # EventBridge-scheduled handler that auto-zeros missing Quickler submitters at 30s
+    │   ├── gauntlet-timer.mjs   # EventBridge-scheduled handler for the Gauntlet race timer
+    │   └── vote-timer.mjs       # EventBridge-scheduled handler that resolves dictionary-rejection votes on timeout
     └── lib/
         ├── blocks.mjs           # All Slack Block Kit views — home states, modals, scoreboard, player card
         ├── cards.mjs            # Card deck, point values, word parsing, breakdowns, getHandRange, dealSizeForHand
@@ -65,8 +71,10 @@ qbim-bot/
         ├── jwt.mjs              # HS256 JWT sign/verify for web-app session tokens (no external deps)
         ├── vote.mjs             # Dictionary-rejection vote system — startWordVote, timer, resolveVote
         ├── quickler.mjs         # EventBridge Scheduler helpers for the 30s Quickler timer
+        ├── gauntlet.mjs         # Gauntlet race-mode logic + EventBridge Scheduler helpers
         ├── autoq-deck.mjs       # Per-deck composition (118-card Quiddler, 126-card Power — see POWER_DECK.md), shuffleDeck, dealForHand, dealFromPool, filterOptionsAgainstDealt, formatDealtCards, getDeckSize, getDeckArray
         ├── autoq-bots.mjs       # AutoQ bot play selection from historical scores
+        ├── autoq-blocks.mjs     # Slack Block Kit views for AutoQ solo mode
         ├── autoq-db.mjs         # AutoQ-specific persistence
         └── dictionary.mjs       # Merriam-Webster validation + house-rule overrides
 ```
@@ -74,11 +82,12 @@ qbim-bot/
 ## 4. Architecture Patterns
 
 ### Overall Style
-Single Lambda function with an internal router pattern. The router (`router.mjs`) dispatches to handler modules based on payload type (Slack events, block actions, view submissions, GET requests).
+A **main router Lambda** (`router.mjs`) with an internal router pattern dispatches to handler modules based on payload type (Slack events, block actions, view submissions, GET requests). Four **auxiliary Lambdas** sit alongside it: the async `score-worker` (word validation + save, invoked fire-and-forget so the Slack modal closes instantly) and three EventBridge Scheduler–driven timers (`quickler-timer`, `gauntlet-timer`, `vote-timer`). The main router invokes the score-worker via `Lambda.invoke` with `InvocationType: "Event"`.
 
 ### Request Flow
 ```
 Slack/Browser → API Gateway → Lambda (router.mjs) → handler → db.mjs/slack.mjs → DynamoDB/Slack API
+                                                        └─(score submit)→ invoke score-worker (async) → save + DM fanout
 ```
 
 ### State Management
@@ -127,6 +136,9 @@ Games opt into in-app dealing via `game.deck_type = "Digital"` (default: `"Physi
 | `players` | List<String> | Current player Slack IDs (drops removed) |
 | `player_start_hands` | Map<String, Number> | Player ID → hand they joined at (3 for originals) |
 | `mulligans` | Map<String, Number> | "playerId#hand" → count |
+| `mulligan_ts` | Map<String, Number> | "playerId#hand" → epoch-ms of last mulligan (debounce guard in `addMulligan`) |
+| `dealt_cards` | Map<String, List> | Digital games: "playerId#hand" → cards the player currently holds |
+| `hand_seen_cards` | Map<String, List> | Digital games: "playerId#hand" → full set of cards shown that hand (initial + mulligan discards) |
 | `dealers` | List<String> | History of dealer assignments per round |
 | `host_slack_id` | String | Who started the game |
 | `winner` | String | Player ID of winner (set on import or finalize) |
@@ -188,7 +200,7 @@ Games opt into in-app dealing via `game.deck_type = "Digital"` (default: `"Physi
 
 **score-entry.mjs** — Handles: `qbim_open_hand_modal`, `qbim_finalize_game`, `qbim_submit_score`, `qbim_confirm_score`, `qbim_admin_*`. Core scoring logic: `saveScore()` validates cards, checks mulligans, writes to DB, and blocks player edits on completed hands (all eligible players submitted) — returns validation error: "Whoops, sorry that hand is complete. Please wait while we refresh." `autoAwardStars(game, hand, handScores, announce)` computes longest word/most words, awards stars, announces dealer with card count (`(${3 + hand + 1} cards each)`), DMs round summary; `announce=true` on first completion (DMs + game state transitions), `announce=false` on edits (recalculate stars only, no DMs). `adminPickEdit()` restricts admin edits to completed hands only — returns validation error if hand is still in progress. `adminSaveEdit()` overwrites the score record and recalculates stars for the edited hand via `autoAwardStars(…, false)`. `postSuperlatives()` builds a pool of game superlatives (Best Hand, Star Player, Biggest Villain, Most Improved, Strong Finish >62, Strong Start >20), picks up to 4 rotating by game_number — currently commented out in `finalizeGame()`, tabled until the pool is larger. `finalizeGame()` completes game, posts standings, updates player stats. Exports: `autoAwardStars`, `finalizeGame`.
 
-**stats-api.mjs** — GET endpoints: `/stats/players` (enriched with computed stats), `/stats/games` (COMPLETE only, with winners), `/stats/scores` (normalized player_id), `/stats/live` (active game with scores and player names). Full table scans with pagination. CORS enabled.
+**stats-api.mjs** — GET endpoints: `/stats/players` (enriched with computed stats), `/stats/games` (COMPLETE only, with winners), `/stats/scores` (normalized player_id), `/stats/autoq-scores` (AutoQ solo-mode scores), `/stats/live` (active game with scores and player names), `/stats/validatewords` (dictionary check for the dashboard), `/stats/dictionary` (house-rule override list). Full table scans with pagination. CORS enabled.
 
 ### Libraries
 
@@ -213,10 +225,12 @@ Games opt into in-app dealing via `game.deck_type = "Digital"` (default: `"Physi
 
 ### Flow 2: Score Submission
 1. User clicks "Enter Hand N Score" → `qbim_open_hand_modal` → `handScoreModal()` with words input
-2. User submits → `qbim_submit_score` → `submitScore()` → `getScoreOptions()` parses words, checks mulligans
+2. User submits → `qbim_submit_score` → `submitScore()` → `getScoreOptions()` parses words, checks mulligans/length cap
 3. If multiple breakdowns: returns `scoreChoiceModal()` → user picks → `qbim_confirm_score` → `confirmScore()`
-4. `saveScore()` checks if this is an edit — if so, verifies the hand is not yet complete (all eligible players submitted). If the hand is complete, returns a validation error and blocks the edit. Otherwise writes to qbim-scores → checks OPEN→ACTIVE transition → checks round completion
-5. If round complete: `autoAwardStars()` → determines longest word/most words → updates star fields → computes next dealer → DMs round summary (with card count) to all → refreshes all home tabs
+4. Once a single breakdown is resolved, the handler hands off to `invokeScoreWorker()` (`Lambda.invoke`, `InvocationType: "Event"`) and closes the modal immediately — the actual save is async
+5. `score-worker.mjs` validates the words against Merriam-Webster (`dictionary.mjs` + cache + house rules). Invalid → DMs the user the rejected words with an "Edit Hand N" button that reopens the modal pre-filled (and offers a vote via `vote.mjs`)
+6. Valid → `saveScore()` checks if this is an edit — if so, verifies the hand is not yet complete (all eligible players submitted). If the hand is complete, returns a validation error and blocks the edit. Otherwise writes to qbim-scores → checks OPEN→ACTIVE transition → checks round completion
+7. If round complete: `autoAwardStars()` → determines longest word/most words → updates star fields → computes next dealer → DMs round summary (with card count) to all → refreshes all home tabs
 
 ### Flow 3: Auto Star Award + Dealer
 1. `autoAwardStars(game, hand, handScores, announce)` in score-entry.mjs
@@ -241,15 +255,36 @@ Games opt into in-app dealing via `game.deck_type = "Digital"` (default: `"Physi
 ## 8. Configuration & Environment
 
 ### Environment Variables (set in template.yaml)
+
+**Globals (all functions):**
 | Variable | Description |
 |----------|-------------|
 | `GAMES_TABLE` | DynamoDB table name for games (from CloudFormation ref) |
 | `SCORES_TABLE` | DynamoDB table name for scores |
 | `PLAYERS_TABLE` | DynamoDB table name for players |
+| `AUTOQ_TABLE` | DynamoDB table name for AutoQ solo-mode data |
+| `DICTIONARY_TABLE` | DynamoDB table name for the word-validation cache / overrides |
+| `VOTES_TABLE` | DynamoDB table name for dictionary-rejection votes |
 | `SLACK_BOT_TOKEN` | Slack Bot User OAuth Token (xoxb-...) |
 | `SLACK_SIGNING_SECRET` | Slack app Signing Secret |
 | `SLACK_CHANNEL_ID` | Channel ID for #qbim (unused now, kept for reference) |
 | `SLACK_ADMIN_USER_ID` | Admin Slack user ID (default: U09MS4ZGBHN) |
+| `MW_API_KEY` | Merriam-Webster Collegiate Dictionary API key |
+| `SLACK_CLIENT_ID` | Slack app Client ID — Sign in with Slack (OIDC) |
+| `SLACK_CLIENT_SECRET` | Slack app Client Secret — OIDC token exchange |
+| `SLACK_TEAM_ID` | Optional Slack workspace/team ID to restrict OAuth to |
+| `SESSION_SECRET` | HMAC secret (32+ byte hex) signing web-app session JWTs |
+| `DASHBOARD_URL` | Origin of the React dashboard — OAuth callbacks redirect here |
+
+**Router function only (inter-Lambda wiring):**
+| Variable | Description |
+|----------|-------------|
+| `SCORE_WORKER_FUNCTION_NAME` | Name of the async score-worker Lambda to invoke |
+| `QUICKLER_TIMER_FUNCTION_ARN` / `QUICKLER_TIMER_ROLE_ARN` | Quickler timer Lambda + Scheduler role for `CreateSchedule` |
+| `GAUNTLET_TIMER_FUNCTION_ARN` / `GAUNTLET_TIMER_ROLE_ARN` | Gauntlet timer Lambda + Scheduler role |
+| `VOTE_TIMER_FUNCTION_ARN` / `VOTE_TIMER_ROLE_ARN` | Vote timer Lambda + Scheduler role |
+
+(The `vote-timer` and `score-worker` functions also receive a subset of these ARNs — see `template.yaml`.)
 
 ### Config Files
 | File | Purpose |
@@ -265,16 +300,40 @@ Games opt into in-app dealing via `game.deck_type = "Digital"` (default: `"Physi
 | `SlackSigningSecret` | String (NoEcho) | Signing secret |
 | `SlackChannelId` | String | Channel ID |
 | `SlackAdminUserId` | String (Default: U09MS4ZGBHN) | Admin user |
+| `MerriamWebsterApiKey` | String (NoEcho) | MW Collegiate Dictionary API key |
+| `SlackClientId` | String | Slack app Client ID (Sign in with Slack) |
+| `SlackClientSecret` | String (NoEcho) | Slack app Client Secret (OIDC exchange) |
+| `SlackTeamId` | String (Default: "") | Optional workspace/team ID to restrict OAuth |
+| `SessionSecret` | String (NoEcho) | HMAC secret signing web-app session JWTs |
+| `DashboardUrl` | String (Default: https://qbim.designmaster.biz) | Dashboard origin for OAuth redirects |
 
 ### API Gateway Routes
-| Method | Path | Handler |
-|--------|------|---------|
-| POST | /slack/events | router → game-flow |
-| POST | /slack/interactivity | router → score-entry |
-| GET | /stats/players | router → stats-api |
-| GET | /stats/games | router → stats-api |
-| GET | /stats/scores | router → stats-api |
-| GET | /stats/live | router → stats-api |
+All routes hit the single `QbimBotFunction` (router.mjs), which dispatches internally.
+
+| Method | Path | Dispatches to |
+|--------|------|---------------|
+| POST | /slack/events | game-flow (event_callback) |
+| POST | /slack/interactivity | score-entry / game-flow (block_actions, view_submission) |
+| GET | /stats/players | stats-api |
+| GET | /stats/games | stats-api |
+| GET | /stats/scores | stats-api |
+| GET | /stats/autoq-scores | stats-api |
+| GET | /stats/live | stats-api |
+| GET | /stats/validatewords | stats-api |
+| GET | /stats/dictionary | stats-api |
+| GET | /auth/slack/login | auth (OIDC start) |
+| GET | /auth/slack/callback | auth (OIDC callback → issues JWT) |
+| GET | /auth/me | auth |
+| GET | /games/me | web-game (Bearer JWT) |
+| POST | /games/create | web-game (Bearer JWT) |
+| POST | /games/join | web-game (Bearer JWT) |
+| POST | /games/mulligan | web-game (Bearer JWT) |
+| POST | /games/drop | web-game (Bearer JWT) |
+| POST | /games/finish | web-game (Bearer JWT) |
+| POST | /scores | web-game (Bearer JWT) |
+| POST | /votes/start | web-game (Bearer JWT) |
+
+Plus a non-API **`Warmer`** event — `rate(5 minutes)` EventBridge schedule sending `{"detail":{"warmup":true}}` to keep the router warm. The Quickler/Gauntlet/vote timers are invoked on-demand via EventBridge Scheduler (one-shot schedules created/deleted at runtime), not fixed API routes.
 
 ## 9. Known Patterns, Conventions & Gotchas
 
