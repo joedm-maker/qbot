@@ -4,5 +4,7 @@ samconfig.toml
 .env
 packaged.yaml
 analysis/data/
-.claude/
+# Local Claude state stays ignored, but the shared agents/ are tracked
+.claude/*
+!.claude/agents/
 AUTOQ_RULES.md
