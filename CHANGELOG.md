@@ -1,3 +1,10 @@
+## v0.2.10 — 2026-09-09
+
+### Fixed
+- **Letter plurals are now blacklisted in dictionary lookup.** MW carries several `"<letter>s"` spellings (e.g. `zs`, `ys`, `js`, `bs`) as unmarked or bare-inflection entries that slipped past `entryRejected` and scored as valid words. `dictionary.mjs` now blocks the whole letter-plural family — bs, cs, ds, es, fs, gs, hs, js, ks, ls, ms, ns, ps, qs, rs, ss, ts, vs, ws, xs, ys, zs — via the house `BLACKLIST`, which short-circuits before cache and MW (so stale "valid" cache entries can't bypass it). Verified against the MW API that none carry a legitimate non-letter definition; the collision words `as`, `is`, `os`, `us` are genuine words and stay playable. (Supersedes the earlier `vs`/`ws`-only block.)
+
+---
+
 ## v0.2.9 — 2026-07-29
 
 ### Fixed
