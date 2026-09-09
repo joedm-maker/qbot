@@ -24,10 +24,17 @@ const MW_BASE = "https://www.dictionaryapi.com/api/v3/references/collegiate/json
  * so a previously-cached "valid" entry can't bypass them.
  *   ve — contraction (I've, we've)
  *   dy — prefix, abbreviation, and chemical symbol (dysprosium)
- *   vs — abbreviation (versus)
- *   ws — letter plural (plural of "w"), not a standalone word
+ *
+ * Letter plurals — "<letter>s" spellings of a letter name pluralized (e.g. w's
+ * written "ws"), not standalone words. MW lists several as unmarked entries so
+ * they slip past entryRejected. We block the whole family EXCEPT the forms that
+ * are also legitimate standalone words (as, is, os, us), which stay playable.
  */
-const BLACKLIST = new Set(["ve", "dy", "vs", "ws"]);
+const LETTER_PLURALS = [
+  "bs", "cs", "ds", "es", "fs", "gs", "hs", "js", "ks", "ls", "ms",
+  "ns", "ps", "qs", "rs", "ss", "ts", "vs", "ws", "xs", "ys", "zs",
+];
+const BLACKLIST = new Set(["ve", "dy", ...LETTER_PLURALS]);
 
 /** Clean a submitted word to what we actually check against the dictionary. */
 export function cleanWord(raw) {
