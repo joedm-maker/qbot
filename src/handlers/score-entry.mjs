@@ -7,6 +7,7 @@ import { renderHome, resolveNames, aggregateScores, findCurrentRound, ADMIN_USER
 import { createQuicklerTimer, deleteQuicklerTimer } from "../lib/quickler.mjs";
 import { validateWords } from "../lib/dictionary.mjs";
 import { resolveVote, startWordVote } from "../lib/vote.mjs";
+import { computeScrewedCounts } from "../lib/screwed.mjs";
 
 // Lambda client for async-invoking the score worker. Lazy-loaded.
 let _lambda;
@@ -1221,23 +1222,11 @@ async function postSuperlatives(game, allScores) {
     pool.push({ id: "star-player", text: `:star: *Star Player* — ${names.get(starPid)} with ${maxStars} star${maxStars > 1 ? "s" : ""}` });
   }
 
-  // Biggest Villain: most villain hands (skip last hand)
-  const villainCounts = {};
-  for (const h of gameHands) {
-    if (h === lastHand) continue;
-    const handScores = allScores.filter((s) => s.hand === h);
-    if (handScores.length < 2) continue;
-    const maxEff = Math.max(...handScores.map((s) => (s.raw_score || 0) + (s.stars || 0) * 10));
-    const maxRaw = Math.max(...handScores.map((s) => s.raw_score || 0));
-    const effWinners = handScores.filter((s) => (s.raw_score || 0) + (s.stars || 0) * 10 === maxEff);
-    const rawWinners = handScores.filter((s) => (s.raw_score || 0) === maxRaw);
-    if (effWinners.length === 1 && rawWinners.length === 1 && effWinners[0].player_slack_id !== rawWinners[0].player_slack_id) {
-      const vPid = effWinners[0].player_slack_id;
-      villainCounts[vPid] = (villainCounts[vPid] || 0) + 1;
-    }
-  }
+  // Biggest Villain: most hands stolen (sole effective winner whose raw was
+  // below the top raw). Shares the exact live-stat logic via computeScrewedCounts.
+  const { screwedOthersCounts } = computeScrewedCounts(game, allScores);
   let maxVillain = 0, villainPid = null;
-  for (const [pid, count] of Object.entries(villainCounts)) {
+  for (const [pid, count] of screwedOthersCounts) {
     if (count > maxVillain) { maxVillain = count; villainPid = pid; }
   }
   if (villainPid && maxVillain > 0) {
@@ -1321,39 +1310,7 @@ async function updatePlayerStats(game, allScores) {
   }
 
   // Compute screwed/villain counts per player across all hands
-  // No villain on the last hand (no deal afterward)
-  const screwedCounts = new Map(); // times_hand_screwed per player
-  const screwedOthersCounts = new Map(); // times_screwed_others per player
-  const lastGameHand = gameHands[gameHands.length - 1];
-  const hands = [...new Set(allScores.map((s) => s.hand))];
-  for (const h of hands) {
-    if (h === lastGameHand) continue; // no villain on last hand
-    const handScores = allScores.filter((s) => s.hand === h);
-    if (handScores.length < 2) continue;
-
-    // Effective score = raw_score + (stars * 10)
-    const withEff = handScores.map((s) => ({
-      pid: s.player_slack_id,
-      raw: s.raw_score || 0,
-      eff: (s.raw_score || 0) + (s.stars || 0) * 10,
-    }));
-
-    // Find single highest effective score player
-    const maxEff = Math.max(...withEff.map((p) => p.eff));
-    const effWinners = withEff.filter((p) => p.eff === maxEff);
-
-    // Find single highest raw score player
-    const maxRaw = Math.max(...withEff.map((p) => p.raw));
-    const rawWinners = withEff.filter((p) => p.raw === maxRaw);
-
-    // Both must be single winners (no ties) and must differ
-    if (effWinners.length === 1 && rawWinners.length === 1 && effWinners[0].pid !== rawWinners[0].pid) {
-      const rawWinnerId = rawWinners[0].pid;
-      const effWinnerId = effWinners[0].pid;
-      screwedCounts.set(rawWinnerId, (screwedCounts.get(rawWinnerId) || 0) + 1);
-      screwedOthersCounts.set(effWinnerId, (screwedOthersCounts.get(effWinnerId) || 0) + 1);
-    }
-  }
+  const { screwedCounts, screwedOthersCounts } = computeScrewedCounts(game, allScores);
 
   for (const playerId of game.players) {
     const t = totals.get(playerId) || { stars: 0 };
