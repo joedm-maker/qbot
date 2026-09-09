@@ -1,3 +1,10 @@
+## v0.2.11 — 2026-09-09
+
+### Fixed
+- **Villain / Screwed now fire when the top raw score is tied.** The stat gated the "stolen hand" credit on the top raw score having a *single* holder (`rawWinners.length === 1`), so when two players tied for the highest raw and a third stole the hand with a star, nobody was flagged. A hand is stolen whenever there's a sole effective winner (raw + stars×10) whose raw was below the top raw — the tie count among raw leaders is irrelevant — and every tied top-raw leader is now credited as *screwed* (a single theft from two co-leaders counts as two screwed events). The per-hand logic is extracted into `lib/screwed.mjs` (`computeScrewedCounts`), shared by live scoring (`updatePlayerStats`), the tabled Biggest Villain superlative, and the backfill so they can't drift; covered by `screwed.test.mjs`. Historical player stats were recomputed from score rows and overwritten via `backfill-screwed-stats.mjs` (villain 342→316, screwed 342→344 — the net villain drop also sheds pre-existing accumulation drift from re-finalizes/edits; the rule fix alone only adds events).
+
+---
+
 ## v0.2.10 — 2026-09-09
 
 ### Fixed

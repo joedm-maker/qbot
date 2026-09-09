@@ -16,6 +16,9 @@ sam build && sam deploy
 
 # Deploy both bot and dashboard together (from this dir)
 bash deploy-all.sh
+
+# Run tests (Node's built-in runner, no deps — discovers *.test.mjs)
+npm test
 ```
 
 **Windows/SAM path:** `/c/Program Files/Amazon/AWSSAMCLI/bin/sam.cmd` (deploy-all.sh uses this explicitly).

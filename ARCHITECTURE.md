@@ -64,6 +64,7 @@ qbim-bot/
     └── lib/
         ├── blocks.mjs           # All Slack Block Kit views — home states, modals, scoreboard, player card
         ├── cards.mjs            # Card deck, point values, word parsing, breakdowns, getHandRange, dealSizeForHand
+        ├── screwed.mjs          # computeScrewedCounts — per-hand Screwed/Villain (stolen-hand) tallies, shared by live stats + backfill
         ├── db.mjs               # DynamoDB CRUD — games, scores, players, mulligans, preferences, dealers, recordDeal
         ├── home.mjs             # Shared renderHome (player + admin views), resolveNames, findCurrentRound, etc.
         ├── slack.mjs            # Slack WebClient wrapper, mock support, dmUser, dmAllPlayers
@@ -209,6 +210,8 @@ Games opt into in-app dealing via `game.deck_type = "Digital"` (default: `"Physi
 **blocks.mjs** — All Slack Block Kit JSON builders: `homeNoGame`, `homeLobby` (with empty score table), `homeActive` (scoreboard, mulligan, score toggle, end game), `homeReview` (finalize button), `homeComplete`, `startGameModal`, `handScoreModal`, `scoreChoiceModal`, `endGameModal`, `adminPickerModal`, `adminEditModal`, `awardStarsModal`, `playerCard`, `lobbyMessage`, `buildScoreboard` (respects show_own_score preference).
 
 **cards.mjs** — Card deck definition (A-Z + QU/IN/ER/TH/CL digraphs with point values). `getScoreOptions(input, maxCards)` — enumerates all possible card breakdowns, handles `+`/space/comma separators, hyphen-asserted boundaries, digraph ambiguity. Groups by score, resolves IN/ER by hand fit. Returns options array for single-select or radio choice.
+
+**screwed.mjs** — `computeScrewedCounts(game, allScores)` — pure per-game tally of the Screwed / Villain stats. A hand is "stolen" when there's a sole effective winner (raw + stars×10) whose raw was below the top raw; the villain is credited once and every tied top-raw leader is credited as screwed. Skips the last hand (no deal follows). Shared by `updatePlayerStats` (live) and `postSuperlatives` (Biggest Villain) in score-entry.mjs plus `backfill-screwed-stats.mjs`, so the three never drift. Covered by `screwed.test.mjs`.
 
 **db.mjs** — DynamoDB operations: `getGame`, `getGamesByDate`, `getRecentGames`, `getMaxGameNumber`, `createGame`, `updateGameStatus`, `addPlayerToGame`, `setPlayerStartHand`, `removePlayerFromGame`, `addDealer`, `addMulligan`, `setMulliganCount`, `getMulliganCount`, `initMulligansMap`, `putScore`, `getAllScores` (full table scan with pagination — used by `postSuperlatives()` for historical averages), `getScoresForGame`, `getScoresForGameHand`, `updateScoreStars`, `getPlayer`, `upsertPlayer`, `setPlayerPreference`, `initPreferences`, `incrementPlayerStats`, `getRegularPlayers`, `updateGameAttr`, `deleteAllScoresForGame`, `deleteGame`.
 
